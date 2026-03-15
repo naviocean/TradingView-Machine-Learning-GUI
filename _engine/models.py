@@ -5,6 +5,10 @@ from pathlib import Path
 from typing import Any, Literal
 
 
+# ---------------------------------------------------------------------------
+# Type aliases
+# ---------------------------------------------------------------------------
+
 Mode = Literal["long", "short", "both"]
 Objective = Literal[
     "net_profit_pct",
@@ -15,6 +19,10 @@ Objective = Literal[
 ]
 SearchMethod = Literal["grid", "bayesian"]
 
+
+# ---------------------------------------------------------------------------
+# Request and input models
+# ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class CandleRequest:
@@ -54,6 +62,10 @@ class OptimizationRequest:
     n_trials: int = 200
 
 
+# ---------------------------------------------------------------------------
+# Runtime and result models
+# ---------------------------------------------------------------------------
+
 @dataclass
 class Trade:
     entry_time: int
@@ -88,11 +100,7 @@ class BacktestMetrics:
     rank: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        for key in ("sl_pct", "tp_pct", "net_profit_pct", "max_drawdown_pct", "win_rate_pct", "profit_factor", "equity_final"):
-            if isinstance(data.get(key), float):
-                data[key] = round(data[key], 2)
-        return data
+        return _rounded_metrics_dict(self)
 
 
 @dataclass
@@ -137,3 +145,25 @@ class OptimizationBundle:
             "coarse_results": [result.to_dict() for result in self.coarse_results],
         }
 
+
+# ---------------------------------------------------------------------------
+# Serialization helpers
+# ---------------------------------------------------------------------------
+
+_ROUNDED_METRIC_FIELDS = (
+    "sl_pct",
+    "tp_pct",
+    "net_profit_pct",
+    "max_drawdown_pct",
+    "win_rate_pct",
+    "profit_factor",
+    "equity_final",
+)
+
+
+def _rounded_metrics_dict(metrics: BacktestMetrics) -> dict[str, Any]:
+    data = asdict(metrics)
+    for key in _ROUNDED_METRIC_FIELDS:
+        if isinstance(data.get(key), float):
+            data[key] = round(data[key], 2)
+    return data
