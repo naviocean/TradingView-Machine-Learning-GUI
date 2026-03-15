@@ -1,27 +1,33 @@
 from __future__ import annotations
 
-from copy import deepcopy
 import json
+import logging
+import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+_log = logging.getLogger(__name__)
+
 
 _DEFAULTS: dict[str, Any] = {
-    "exchange": "NASDAQ",
+    "bot_name": "hyperview",
     "timeframe": "1h",
     "session": "regular",
-    "adjustment": "splits",
     "initial_capital": 100_000,
     "data_dir": "data",
     "output_dir": "results",
+    "strategy_path": "strategy",
+    "dataformat": "csv",
+    "pairlist": [],
+    "add_config_files": [],
     "optimization": {
         "search_method": "grid",
         "n_trials": 200,
         "objective": "net_profit_pct",
         "top_n": 10,
-        "fine_factor": 2,
-        "sl_range": {"min": 1.0, "max": 15.0, "step": 0.5},
-        "tp_range": {"min": 1.0, "max": 15.0, "step": 0.5},
+        "sl_range": {"min": 1.0, "max": 15.0},
+        "tp_range": {"min": 1.0, "max": 15.0},
     },
 }
 
@@ -31,7 +37,7 @@ _SEARCH_PATHS = [
 ]
 
 _ALLOWED_SESSIONS = {"regular", "extended"}
-_ALLOWED_ADJUSTMENTS = {"splits", "dividends", "none"}
+_ALLOWED_DATAFORMATS = {"csv"}
 _ALLOWED_OBJECTIVES = {
     "net_profit_pct",
     "profit_factor",
@@ -41,17 +47,51 @@ _ALLOWED_OBJECTIVES = {
 }
 _ALLOWED_SEARCH_METHODS = {"grid", "bayesian"}
 
+_ENV_PREFIX = "HYPERVIEW__"
+
+# Keys that are config metadata, not runtime settings.
+_META_KEYS = {"$schema", "add_config_files"}
+
 
 def load_config(path: str | Path | None = None) -> dict[str, Any]:
-    """Load configuration from a JSON file, falling back to built-in defaults."""
+    """Load configuration from JSON file(s), env-var overrides, then validate.
+
+    Resolution order (last wins):
+      1. Built-in defaults
+      2. Primary config file
+      3. Additional config files (``add_config_files``)
+      4. Environment variables (``HYPERVIEW__`` prefix)
+
+    CLI arguments are applied *outside* this function by the caller.
+    """
     config = deepcopy(_DEFAULTS)
     file_path = _resolve_config_path(path)
+
+    # -- primary config file --
     if file_path is not None:
-        with open(file_path, encoding="utf-8") as fh:
-            user_config = json.load(fh)
-        if not isinstance(user_config, dict):
-            raise ValueError(f"Config file must contain a JSON object: {file_path}")
+        user_config = _read_json(file_path)
         _deep_merge(config, user_config)
+
+        # -- additional config files (paths relative to primary config dir) --
+        extra_files = config.get("add_config_files", [])
+        if isinstance(extra_files, list):
+            base_dir = file_path.resolve().parent
+            for extra in extra_files:
+                extra_path = base_dir / extra
+                if not extra_path.is_file():
+                    raise FileNotFoundError(
+                        f"Additional config file not found: {extra_path} "
+                        f"(referenced in 'add_config_files')"
+                    )
+                _deep_merge(config, _read_json(extra_path))
+
+    # -- environment variable overrides --
+    _apply_env_overrides(config)
+
+    # -- strip metadata keys before normalisation / validation --
+    for key in _META_KEYS:
+        config.pop(key, None)
+
     normalized = _normalize_config(config)
     _validate_config(normalized)
     return normalized
@@ -67,6 +107,61 @@ def _resolve_config_path(path: str | Path | None) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def _read_json(file_path: Path) -> dict[str, Any]:
+    """Read a JSON file and return the top-level object."""
+    with open(file_path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, dict):
+        raise ValueError(f"Config file must contain a JSON object: {file_path}")
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Environment variable overrides  (HYPERVIEW__KEY / HYPERVIEW__SECTION__KEY)
+# ---------------------------------------------------------------------------
+
+def _apply_env_overrides(config: dict[str, Any]) -> None:
+    """Merge ``HYPERVIEW__``-prefixed environment variables into *config*.
+
+    ``__`` is the level separator, matching Freqtrade convention.
+    Values are coerced: JSON-parseable strings are decoded first,
+    otherwise plain strings are kept as-is.
+    """
+    overrides: list[str] = []
+    for env_key, raw_value in os.environ.items():
+        if not env_key.startswith(_ENV_PREFIX):
+            continue
+        parts = env_key[len(_ENV_PREFIX):].lower().split("__")
+        if not all(parts):
+            continue
+        coerced = _coerce_env_value(raw_value)
+        _set_nested(config, parts, coerced)
+        overrides.append(env_key)
+
+    if overrides:
+        _log.info(
+            "Config overrides from environment: %s",
+            ", ".join(sorted(overrides)),
+        )
+
+
+def _coerce_env_value(raw: str) -> Any:
+    """Attempt JSON decode; fall back to plain string."""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
+def _set_nested(target: dict[str, Any], keys: list[str], value: Any) -> None:
+    """Set a value in a nested dict, creating intermediate dicts as needed."""
+    for key in keys[:-1]:
+        if key not in target or not isinstance(target[key], dict):
+            target[key] = {}
+        target = target[key]
+    target[keys[-1]] = value
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> None:
@@ -90,16 +185,19 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_config(config: dict[str, Any]) -> None:
-    _require_non_empty_string(config, "exchange")
+    _require_non_empty_string(config, "bot_name")
     _require_non_empty_string(config, "timeframe")
     _require_choice(config, "session", _ALLOWED_SESSIONS)
-    _require_choice(config, "adjustment", _ALLOWED_ADJUSTMENTS)
     _require_positive_number(config, "initial_capital")
     _require_non_empty_string(config, "data_dir")
     _require_non_empty_string(config, "output_dir")
+    _require_non_empty_string(config, "strategy_path")
+    _require_choice(config, "dataformat", _ALLOWED_DATAFORMATS)
 
     if "strategy" in config and config["strategy"] is not None:
         _require_non_empty_string(config, "strategy")
+
+    _validate_pairlist(config)
 
     optimization = config.get("optimization")
     if not isinstance(optimization, dict):
@@ -109,7 +207,6 @@ def _validate_config(config: dict[str, Any]) -> None:
     _require_positive_int(optimization, "n_trials", prefix="optimization.")
     _require_choice(optimization, "objective", _ALLOWED_OBJECTIVES, prefix="optimization.")
     _require_positive_int(optimization, "top_n", prefix="optimization.")
-    _require_positive_int(optimization, "fine_factor", prefix="optimization.")
 
     _validate_range_config(optimization, "sl_range")
     _validate_range_config(optimization, "tp_range")
@@ -123,7 +220,6 @@ def _validate_range_config(optimization: dict[str, Any], key: str) -> None:
 
     _require_number(range_config, "min", prefix=prefix)
     _require_number(range_config, "max", prefix=prefix)
-    _require_positive_number(range_config, "step", prefix=prefix)
 
     min_value = float(range_config["min"])
     max_value = float(range_config["max"])
@@ -132,6 +228,28 @@ def _validate_range_config(optimization: dict[str, Any], key: str) -> None:
             f"Config value 'optimization.{key}.min' must be less than or equal to "
             f"'optimization.{key}.max'"
         )
+
+
+def _validate_pairlist(config: dict[str, Any]) -> None:
+    pairlist = config.get("pairlist", [])
+    if not isinstance(pairlist, list):
+        raise ValueError("Config value 'pairlist' must be a list of strings (e.g. 'EXCHANGE:SYMBOL')")
+    for i, entry in enumerate(pairlist):
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError(
+                f"Config value 'pairlist[{i}]' must be a non-empty string"
+            )
+        parts = entry.split(":")
+        if len(parts) != 2:
+            raise ValueError(
+                f"Config value 'pairlist[{i}]' has invalid format '{entry}'. "
+                f"Expected 'EXCHANGE:SYMBOL' (e.g. 'NASDAQ:AAPL')."
+            )
+        if not parts[0].strip() or not parts[1].strip():
+            raise ValueError(
+                f"Config value 'pairlist[{i}]' has invalid format '{entry}'. "
+                f"Both exchange and symbol must be non-empty."
+            )
 
 
 def _require_choice(

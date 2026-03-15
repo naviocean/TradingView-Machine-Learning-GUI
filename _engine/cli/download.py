@@ -5,21 +5,22 @@ import time
 
 from .._utils import _format_time
 from ..downloader import TradingViewDataClient
-from ._helpers import _resolve
+from ._helpers import _resolve, resolve_pairlist
 
 
 def run_download_data(args: argparse.Namespace, config: dict) -> int:
-    exchange = _resolve(args, config, "exchange")
     timeframe = _resolve(args, config, "timeframe")
     session = _resolve(args, config, "session")
-    adjustment = _resolve(args, config, "adjustment")
+    adjustment = args.adjustment
     data_dir = config["data_dir"]
 
-    pairs = [(symbol, exchange) for symbol in args.pairs]
+    pairs = resolve_pairlist(args, config)
 
     print(f"\n{'='*60}")
     print("  HyperView - Download Data")
-    print(f"  {len(pairs)} pair(s) | {exchange} | {timeframe}")
+    print(f"  {len(pairs)} pair(s) | {timeframe}")
+    for symbol, exch in pairs:
+        print(f"    {exch}:{symbol}")
     if args.start:
         print(f"  Range: {args.start} -> {args.end or 'now'}")
     print(f"{'='*60}\n")

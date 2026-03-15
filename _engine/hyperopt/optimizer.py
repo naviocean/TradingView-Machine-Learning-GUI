@@ -75,8 +75,10 @@ class _Optimizer:
         return self._optimize_grid(request, output_path)
 
     def _optimize_grid(self, request: OptimizationRequest, output_path: Path) -> OptimizationBundle:
-        sl_values = _build_range(request.sl_min, request.sl_max, request.sl_step)
-        tp_values = _build_range(request.tp_min, request.tp_max, request.tp_step)
+        coarse_sl_step = _auto_step(request.sl_min, request.sl_max)
+        coarse_tp_step = _auto_step(request.tp_min, request.tp_max)
+        sl_values = _build_range(request.sl_min, request.sl_max, coarse_sl_step)
+        tp_values = _build_range(request.tp_min, request.tp_max, coarse_tp_step)
         print(f"\n[Coarse grid] {len(sl_values)} SL x {len(tp_values)} TP = {len(sl_values) * len(tp_values)} combinations")
         coarse_results = self._evaluate_grid(
             mode=request.mode,
@@ -87,10 +89,10 @@ class _Optimizer:
         )
 
         best_coarse = coarse_results[0]
-        fine_sl_step = max(request.sl_step / float(request.fine_factor), 0.0001)
-        fine_tp_step = max(request.tp_step / float(request.fine_factor), 0.0001)
-        fine_sl = _refine_range(best_coarse.sl_pct, request.sl_min, request.sl_max, request.sl_step, fine_sl_step)
-        fine_tp = _refine_range(best_coarse.tp_pct, request.tp_min, request.tp_max, request.tp_step, fine_tp_step)
+        fine_sl_step = max(coarse_sl_step / 2.0, 0.0001)
+        fine_tp_step = max(coarse_tp_step / 2.0, 0.0001)
+        fine_sl = _refine_range(best_coarse.sl_pct, request.sl_min, request.sl_max, coarse_sl_step, fine_sl_step)
+        fine_tp = _refine_range(best_coarse.tp_pct, request.tp_min, request.tp_max, coarse_tp_step, fine_tp_step)
         print(f"\n[Fine grid] {len(fine_sl)} SL x {len(fine_tp)} TP = {len(fine_sl) * len(fine_tp)} combinations  (best coarse SL={best_coarse.sl_pct:.4f}% TP={best_coarse.tp_pct:.4f}%)")
         fine_results = self._evaluate_grid(
             mode=request.mode,
@@ -125,8 +127,8 @@ class _Optimizer:
         print(f"\n[Bayesian] {n_trials} trials via Optuna TPE  (SL {request.sl_min}–{request.sl_max}, TP {request.tp_min}–{request.tp_max})")
 
         def objective(trial: optuna.Trial) -> float:
-            sl_value = round(trial.suggest_float("sl_pct", request.sl_min, request.sl_max), 4)
-            tp_value = round(trial.suggest_float("tp_pct", request.tp_min, request.tp_max), 4)
+            sl_value = trial.suggest_float("sl_pct", request.sl_min, request.sl_max, step=0.01)
+            tp_value = trial.suggest_float("tp_pct", request.tp_min, request.tp_max, step=0.01)
             risk = build_risk(request.mode, sl_value, tp_value)
             result = self.backtester.run(self.signal_frame, risk, request.mode)
             all_results.append(result.metrics)
@@ -215,6 +217,17 @@ def _objective_value(result: BacktestMetrics, objective: Objective) -> float:
     if objective == "trade_count":
         return float(result.trade_count)
     return result.max_drawdown_pct
+
+
+_GRID_POINTS = 29
+
+
+def _auto_step(low: float, high: float, points: int = _GRID_POINTS) -> float:
+    """Derive a step size that divides [low, high] into *points* intervals."""
+    span = high - low
+    if span <= 0 or points < 2:
+        return max(span, 0.0001)
+    return round(span / (points - 1), 8)
 
 
 def _build_range(start: float, end: float, step: float) -> list[float]:

@@ -23,23 +23,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ------ download-data ------
     dl = subparsers.add_parser("download-data", help="Download candle data for one or more pairs")
-    dl.add_argument("--pairs", nargs="+", required=True, help="Symbols to download (e.g. NFLX AAPL TSLA)")
-    dl.add_argument("--exchange", default=None)
+    dl.add_argument("--pairs", nargs="+", default=None, help="Pairs to download (e.g. NASDAQ:NFLX COINBASE:BTCUSD); falls back to config pairlist")
     dl.add_argument("--timeframe", default=None)
     dl.add_argument("--start", default=None)
     dl.add_argument("--end", default=None)
     dl.add_argument("--session", default=None)
-    dl.add_argument("--adjustment", default=None)
+    dl.add_argument("--adjustment", default="splits", help="Price adjustment: splits, dividends, none (default: splits)")
 
     # ------ backtest ------
     bt = subparsers.add_parser("backtest", help="Run a single backtest with fixed SL/TP")
-    bt.add_argument("--symbol", required=True)
-    bt.add_argument("--exchange", default=None)
+    bt.add_argument("--symbol", default=None, help="Single pair to backtest (e.g. NASDAQ:TSLA); falls back to config pairlist")
     bt.add_argument("--timeframe", default=None)
     bt.add_argument("--start", default=None)
     bt.add_argument("--end", default=None)
     bt.add_argument("--session", default=None)
-    bt.add_argument("--adjustment", default=None)
+    bt.add_argument("--adjustment", default="splits", help="Price adjustment: splits, dividends, none (default: splits)")
     bt.add_argument("--strategy", default=None, help="Strategy name (default: from config)")
     bt.add_argument("--sl", type=float, required=True, help="Stop-loss %%")
     bt.add_argument("--tp", type=float, required=True, help="Take-profit %%")
@@ -47,20 +45,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     # ------ hyperopt ------
     ho = subparsers.add_parser("hyperopt", help="Hyper-optimize SL/TP parameters")
-    ho.add_argument("--symbol", required=True)
-    ho.add_argument("--exchange", default=None)
+    ho.add_argument("--symbol", default=None, help="Single pair to optimize (e.g. NASDAQ:TSLA); falls back to config pairlist")
     ho.add_argument("--timeframe", default=None)
     ho.add_argument("--start", default=None)
     ho.add_argument("--end", default=None)
     ho.add_argument("--session", default=None)
-    ho.add_argument("--adjustment", default=None)
+    ho.add_argument("--adjustment", default="splits", help="Price adjustment: splits, dividends, none (default: splits)")
     ho.add_argument("--strategy", default=None, help="Strategy name (default: from config)")
     ho.add_argument("--sl-min", type=float, default=None)
     ho.add_argument("--sl-max", type=float, default=None)
-    ho.add_argument("--sl-step", type=float, default=None)
     ho.add_argument("--tp-min", type=float, default=None)
     ho.add_argument("--tp-max", type=float, default=None)
-    ho.add_argument("--tp-step", type=float, default=None)
     ho.add_argument("--mode", choices=["long", "short", "both"], default="long")
     ho.add_argument(
         "--objective",

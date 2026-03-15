@@ -18,14 +18,20 @@ Instead of bouncing between Pine scripts, CSV exports, and improvised notebooks,
 # Install in editable mode (creates the `hyperview` CLI command, installs all dependencies including TA-Lib)
 pip install -e .
 
-# Download data for one or more pairs
-hyperview download-data --pairs NFLX AAPL --exchange NASDAQ --timeframe 1h --start 2023-01-03 --session extended
+# Download data for specific pairs
+hyperview download-data --pairs NASDAQ:NFLX NASDAQ:AAPL --timeframe 1h --start 2023-01-03 --session extended
 
-# Run a single backtest
-hyperview backtest --symbol NFLX --exchange NASDAQ --timeframe 1h --sl 3.23 --tp 13.06 --mode long --start 2023-01-03
+# Or define your pairs in config.json and just run:
+hyperview download-data
 
-# Hyper-optimize SL/TP (uses config.json defaults for ranges if not specified)
-hyperview hyperopt --symbol NFLX --exchange NASDAQ --timeframe 1h --start 2023-01-03
+# Run a single backtest (uses config pairlist)
+hyperview backtest --sl 3.23 --tp 13.06 --mode long --start 2023-01-03
+
+# Or target a specific symbol
+hyperview backtest --symbol NASDAQ:NFLX --sl 3.23 --tp 13.06 --mode long --start 2023-01-03
+
+# Hyper-optimize SL/TP across all pairs in config
+hyperview hyperopt --mode long --start 2023-01-03
 
 # List cached data and registered strategies
 hyperview list-data
@@ -47,7 +53,7 @@ Python bytecode is redirected into the project-level `.pycache/` directory, so r
 
 ```
 pyproject.toml                    Package metadata & `hyperview` CLI entry point
-config.json                       Default configuration (exchange, timeframe, opt ranges)
+config.json                       Default configuration (timeframe, pairlist, opt ranges)
 data/                             Cached candle data (CSV, auto-generated)
 results/                          Optimization & backtest results (auto-generated)
 strategy/                         Pluggable strategy framework (user-facing)
@@ -81,76 +87,111 @@ HyperView loads defaults from `config.json` at the project root. CLI flags alway
 
 ```json
 {
-    "exchange": "NASDAQ",
     "timeframe": "1h",
     "session": "extended",
-    "adjustment": "splits",
     "strategy": "macd_rsi",
     "initial_capital": 100000,
     "data_dir": "data",
     "output_dir": "results",
+    "pairlist": [
+        "NASDAQ:NFLX",
+        "NASDAQ:TSLA",
+        "COINBASE:BTCUSD"
+    ],
     "optimization": {
         "search_method": "bayesian",
         "n_trials": 200,
         "objective": "net_profit_pct",
         "top_n": 10,
-        "fine_factor": 2,
-        "sl_range": { "min": 1.0, "max": 15.0, "step": 0.5 },
-        "tp_range": { "min": 1.0, "max": 15.0, "step": 0.5 }
+        "sl_range": { "min": 1.0, "max": 15.0 },
+        "tp_range": { "min": 1.0, "max": 15.0 }
     }
 }
 ```
 
 Use `--config /path/to/custom.json` to load a different file.
 
+### Pairlist
+
+The `pairlist` array defines the symbols you want to work with. Every entry must use the `EXCHANGE:SYMBOL` format — this lets you mix pairs from different exchanges in a single config:
+
+```json
+"pairlist": [
+    "NASDAQ:NFLX",
+    "NASDAQ:TSLA",
+    "NASDAQ:AAPL",
+    "COINBASE:BTCUSD"
+]
+```
+
+When you run a command without `--pairs` or `--symbol`, HyperView automatically uses the config pairlist — downloading, backtesting, or optimizing every pair in sequence. If you pass `--pairs` or `--symbol` on the CLI, the config pairlist is ignored for that run.
+
+You can maintain separate config files for different asset classes:
+
+```bash
+hyperview --config stocks.json download-data
+hyperview --config crypto.json hyperopt --mode long
+```
+
 ## CLI Reference
 
 ### `download-data` — Fetch Candle Data
 
 ```bash
-hyperview download-data --pairs NFLX AAPL TSLA --exchange NASDAQ --timeframe 1h --start 2023-01-03
+# Download all pairs from config pairlist
+hyperview download-data
+
+# Or specify pairs directly
+hyperview download-data --pairs NASDAQ:NFLX NASDAQ:AAPL NASDAQ:TSLA --timeframe 1h --start 2023-01-03
 ```
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--pairs` | Yes | — | One or more ticker symbols |
-| `--exchange` | No | config | Exchange (e.g. `NASDAQ`, `BITSTAMP`) |
+| `--pairs` | No | config pairlist | One or more `EXCHANGE:SYMBOL` pairs (overrides pairlist) |
 | `--timeframe` | No | config | Bar interval: `1m` `5m` `15m` `1h` `4h` `1d` etc. |
 | `--start` / `--end` | No | — | Date range (ISO format) |
 | `--session` | No | config | `regular` or `extended` |
-| `--adjustment` | No | config | Price adjustment (`splits`, `dividends`, `none`) |
+| `--adjustment` | No | `splits` | Price adjustment (`splits`, `dividends`, `none`) |
 
 ### `backtest` — Single Strategy Evaluation
 
 ```bash
-hyperview backtest --symbol NFLX --sl 5.0 --tp 5.0 --mode long --start 2023-01-03
+# Backtest all pairs from config pairlist
+hyperview backtest --sl 5.0 --tp 5.0 --mode long --start 2023-01-03
+
+# Or target a specific symbol
+hyperview backtest --symbol NASDAQ:NFLX --sl 5.0 --tp 5.0 --mode long --start 2023-01-03
 ```
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--symbol` | Yes | — | Ticker symbol |
+| `--symbol` | No | config pairlist | `EXCHANGE:SYMBOL` pair (overrides pairlist) |
 | `--sl` | Yes | — | Stop-loss % |
 | `--tp` | Yes | — | Take-profit % |
 | `--strategy` | No | config | Strategy name (e.g. `macd_rsi`, `adx_stochastic`) |
 | `--mode` | No | `long` | `long`, `short`, or `both` |
-| `--exchange`, `--timeframe`, `--session`, `--start`, `--end` | No | config | Standard filters |
+| `--timeframe`, `--session`, `--adjustment`, `--start`, `--end` | No | config / defaults | Standard filters |
 
 ### `hyperopt` — Hyper-Optimize SL/TP
 
 ```bash
-hyperview hyperopt --symbol NFLX --search-method bayesian --n-trials 300
+# Optimize all pairs from config pairlist
+hyperview hyperopt --search-method bayesian --n-trials 300
+
+# Or target a specific symbol
+hyperview hyperopt --symbol NASDAQ:NFLX --search-method bayesian --n-trials 300
 ```
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
-| `--symbol` | Yes | — | Ticker symbol |
+| `--symbol` | No | config pairlist | `EXCHANGE:SYMBOL` pair (overrides pairlist) |
 | `--sl-min/max/step` | No | config | Stop-loss % search range |
 | `--tp-min/max/step` | No | config | Take-profit % search range |
 | `--search-method` | No | config | `grid` or `bayesian` |
 | `--n-trials` | No | config | Bayesian trial count |
 | `--objective` | No | config | `net_profit_pct` `profit_factor` `win_rate_pct` `max_drawdown_pct` `trade_count` |
 | `--top-n` | No | config | Number of top candidates to keep |
-| `--strategy`, `--mode`, `--exchange`, `--timeframe`, etc. | No | config | Standard filters |
+| `--strategy`, `--mode`, `--timeframe`, `--adjustment`, etc. | No | config / defaults | Standard filters |
 
 ### `list-data` — Show Cached Datasets
 
@@ -238,7 +279,7 @@ class MyStrategy(BaseStrategy):
         return df
 ```
 
-Then use it: `hyperview backtest --symbol NFLX --strategy my_strategy --sl 5 --tp 5`
+Then use it: `hyperview backtest --symbol NASDAQ:NFLX --strategy my_strategy --sl 5 --tp 5`
 
 ## Output Files
 

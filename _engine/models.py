@@ -51,13 +51,10 @@ class OptimizationRequest:
     objective: Objective
     sl_min: float
     sl_max: float
-    sl_step: float
     tp_min: float
     tp_max: float
-    tp_step: float
     top_n: int = 10
     initial_equity: float = 100_000.0
-    fine_factor: int = 2
     search_method: SearchMethod = "grid"
     n_trials: int = 200
 
@@ -131,13 +128,10 @@ class OptimizationBundle:
                 "objective": self.request.objective,
                 "sl_min": self.request.sl_min,
                 "sl_max": self.request.sl_max,
-                "sl_step": self.request.sl_step,
                 "tp_min": self.request.tp_min,
                 "tp_max": self.request.tp_max,
-                "tp_step": self.request.tp_step,
                 "top_n": self.request.top_n,
                 "initial_equity": self.request.initial_equity,
-                "fine_factor": self.request.fine_factor,
                 "search_method": self.request.search_method,
                 "n_trials": self.request.n_trials,
             },

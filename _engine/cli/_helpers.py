@@ -22,6 +22,40 @@ def _resolve(args: argparse.Namespace, config: dict, key: str, default=None):
     return config.get(key, default)
 
 
+def parse_pair(entry: str) -> tuple[str, str]:
+    """Parse 'EXCHANGE:SYMBOL' into (symbol, exchange)."""
+    if ":" not in entry:
+        raise SystemExit(
+            f"Error: Invalid pair format '{entry}'. "
+            f"Expected 'EXCHANGE:SYMBOL' (e.g. 'NASDAQ:AAPL')."
+        )
+    exchange, symbol = entry.split(":", 1)
+    exchange, symbol = exchange.strip(), symbol.strip()
+    if not exchange or not symbol:
+        raise SystemExit(f"Error: Invalid pair format '{entry}'. Expected 'EXCHANGE:SYMBOL'.")
+    return symbol, exchange
+
+
+def resolve_pairlist(args: argparse.Namespace, config: dict) -> list[tuple[str, str]]:
+    """Return list of (symbol, exchange) tuples from --pairs, --symbol, or config pairlist."""
+    # Explicit --pairs (download-data)
+    pairs_arg = getattr(args, "pairs", None)
+    if pairs_arg:
+        return [parse_pair(p) for p in pairs_arg]
+    # Explicit --symbol (backtest / hyperopt)
+    symbol = getattr(args, "symbol", None)
+    if symbol:
+        return [parse_pair(symbol)]
+    # Fall back to config pairlist
+    entries = config.get("pairlist", [])
+    if not entries:
+        raise SystemExit(
+            "Error: No pairs specified. Either use --pairs / --symbol on the CLI,\n"
+            "or define a 'pairlist' in your config file."
+        )
+    return [parse_pair(e) for e in entries]
+
+
 def load_candles(candle_request: "CandleRequest", data_dir: str, *, step: str = "") -> pd.DataFrame:
     """Load cached candle data and print progress."""
     print(f"\n[{step}] Loading candle data...")
