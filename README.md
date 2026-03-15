@@ -1,20 +1,21 @@
 # HyperView
 
-A CLI-driven TradingView strategy backtester and hyper-optimizer. Downloads historical candle data through the TradingView websocket, runs pluggable strategies in pure Python backed by [TA-Lib](https://github.com/TA-Lib/ta-lib-python) (150+ indicators), and optimizes SL/TP parameters via grid search or Bayesian (Optuna TPE) — all from a single `hyperview` command.
+**Turn TradingView ideas into testable, terminal-speed trading systems.**
+
+HyperView is for the moment a TradingView strategy stops being a chart experiment and starts needing hard evidence. It pulls historical candles straight from TradingView's websocket, runs your strategy logic in Python, and backtests with fill behavior designed to closely mirror Pine Script, so the results you tune locally in python still match the results you'll see on TradingView's strategy tester.
+
+Instead of bouncing between Pine scripts, CSV exports, and improvised notebooks, HyperView gives you one clean loop: pull up to 40K bars, build on [TA-Lib](https://github.com/TA-Lib/ta-lib-python)'s 150+ indicators, simulate realistic SL/TP execution, and let Bayesian optimization hunt for better parameter ranges. No API keys. No browser automation. No spreadsheet cleanup. Just faster iteration, sharper validation, and a workflow built for traders who want to develop strategies like engineers.
 
 ## Prerequisites
 
 - **Python 3.11+**
-- **TA-Lib** — pre-built wheels ship for Python 3.9–3.14 on Windows, macOS, and Linux:
-  ```bash
-  pip install TA-Lib
-  ```
-- **Firefox** — TradingView authentication reads session cookies from your local Firefox profile. Log in to [tradingview.com](https://www.tradingview.com) in Firefox before downloading data.
+- **TA-Lib** — installed automatically by `pip install`. Pre-built wheels ship for Python 3.9–3.14 on Windows, macOS, and Linux.
+- **Firefox** *(optional)* — If you have a TradingView paid plan, HyperView can read your Firefox session cookies to download up to **40K candles**. Without it, the websocket still downloads up to **5K candles** anonymously. To use this, just log in to [tradingview.com](https://www.tradingview.com) in Firefox before downloading data.
 
 ## Quick Start
 
 ```bash
-# Install in editable mode (creates the `hyperview` CLI command)
+# Install in editable mode (creates the `hyperview` CLI command, installs all dependencies including TA-Lib)
 pip install -e .
 
 # Download data for one or more pairs
@@ -35,7 +36,7 @@ You can also run via `python -m _engine` instead of `hyperview`.
 
 ## How It Works
 
-1. **Download** — Connects to TradingView's websocket using your existing Firefox session cookies. Supports up to 10K historical bars on paid plans with automatic backfill.
+1. **Download** — Connects to TradingView's websocket using your existing Firefox session cookies. Supports up to 40K historical bars on paid plans with automatic backfill.
 2. **Signal** — Runs a pluggable strategy (e.g. the included MACD+RSI or ADX+Stochastic) in pure Python with TA-Lib indicator parity.
 3. **Backtest** — Simulates trades bar-by-bar using TradingView-parity fill assumptions (next-bar-open entry, intrabar SL/TP exit ordering).
 4. **Hyper-Optimize** — Runs coarse+fine grid search or Bayesian TPE across SL/TP combinations, ranking by your chosen objective.
