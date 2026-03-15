@@ -16,7 +16,7 @@ class CandleCache:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def load(self, request: CandleRequest) -> pd.DataFrame | None:
-        path = self._path(request)
+        path = self._resolve_existing_path(request)
         if not path.exists():
             return None
         return pd.read_csv(path)
@@ -25,6 +25,9 @@ class CandleCache:
         path = self._path(request)
         path.parent.mkdir(parents=True, exist_ok=True)
         frame.to_csv(path, index=False)
+        legacy_path = self._legacy_path(request)
+        if legacy_path != path and legacy_path.exists():
+            legacy_path.unlink()
 
     def covers_range(self, frame: pd.DataFrame, request: CandleRequest) -> bool:
         if frame.empty:
@@ -39,18 +42,43 @@ class CandleCache:
         return start_ok and end_ok
 
     def _path(self, request: CandleRequest) -> Path:
+        return self.cache_dir / f"{self._stem(request)}.csv"
+
+    def _resolve_existing_path(self, request: CandleRequest) -> Path:
+        preferred = self._path(request)
+        if preferred.exists():
+            return preferred
+        legacy = self._legacy_path(request)
+        if legacy.exists():
+            return legacy
+        return preferred
+
+    def _stem(self, request: CandleRequest) -> str:
+        timeframe = _sanitize_cache_component(request.timeframe)
+        session = _sanitize_cache_component(request.session)
+        exchange = _sanitize_cache_component(request.exchange)
+        symbol = _sanitize_cache_component(request.symbol)
+        adjustment = _sanitize_cache_component(request.adjustment)
+        filename = f"{timeframe}-{session}-{exchange}-{symbol}"
+        # Keep non-default adjustments distinct without bloating the common case.
+        if adjustment != "splits":
+            filename += f"-{adjustment}"
+        return filename
+
+    def _legacy_path(self, request: CandleRequest) -> Path:
         exchange = request.exchange.replace(":", "_")
         symbol = request.symbol.replace(":", "_")
         timeframe = request.timeframe.replace(":", "_")
         session = request.session.replace(":", "_")
         adjustment = request.adjustment.replace(":", "_")
-        # Keep session in the cache key so regular vs extended never mix.
         filename = f"{exchange}_{symbol}_{timeframe}_{session}"
-        # Include adjustment only when non-default to keep names short.
         if adjustment != "splits":
             filename += f"_{adjustment}"
-        filename += ".csv"
-        return self.cache_dir / filename
+        return self.cache_dir / f"{filename}.csv"
+
+
+def _sanitize_cache_component(value: str) -> str:
+    return value.replace(":", "_")
 
 
 # ------------------------------------------------------------------

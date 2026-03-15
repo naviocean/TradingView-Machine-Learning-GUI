@@ -1,27 +1,24 @@
 {
     "$schema": "./config.schema.json",
     "bot_name": "hyperview",
-
     "timeframe": "1h",
     "session": "extended",
+    "mode": "long",
     "strategy": "adx_stochastic",
     "initial_capital": 100000,
-
     "data_dir": "data",
     "output_dir": "results",
     "strategy_path": "strategy",
     "dataformat": "csv",
-
     "pairlist": [
         "NASDAQ:NFLX",
         "NASDAQ:TSLA",
         "COINBASE:BTCUSD",
         "COINBASE:ETHUSD"
     ],
-
     "optimization": {
         "search_method": "bayesian",
-        "n_trials": 200,
+        "n_trials": 100,
         "objective": "net_profit_pct",
         "top_n": 10,
         "sl_range": {

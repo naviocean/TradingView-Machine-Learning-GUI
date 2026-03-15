@@ -14,6 +14,7 @@ _DEFAULTS: dict[str, Any] = {
     "bot_name": "hyperview",
     "timeframe": "1h",
     "session": "regular",
+    "mode": "long",
     "initial_capital": 100_000,
     "data_dir": "data",
     "output_dir": "results",
@@ -37,6 +38,7 @@ _SEARCH_PATHS = [
 ]
 
 _ALLOWED_SESSIONS = {"regular", "extended"}
+_ALLOWED_MODES = {"long", "short", "both"}
 _ALLOWED_DATAFORMATS = {"csv"}
 _ALLOWED_OBJECTIVES = {
     "net_profit_pct",
@@ -95,6 +97,11 @@ def load_config(path: str | Path | None = None) -> dict[str, Any]:
     normalized = _normalize_config(config)
     _validate_config(normalized)
     return normalized
+
+
+def resolve_config_path(path: str | Path | None = None) -> Path | None:
+    """Return the primary config path used for loading, if any."""
+    return _resolve_config_path(path)
 
 
 def _resolve_config_path(path: str | Path | None) -> Path | None:
@@ -188,6 +195,7 @@ def _validate_config(config: dict[str, Any]) -> None:
     _require_non_empty_string(config, "bot_name")
     _require_non_empty_string(config, "timeframe")
     _require_choice(config, "session", _ALLOWED_SESSIONS)
+    _require_choice(config, "mode", _ALLOWED_MODES)
     _require_positive_number(config, "initial_capital")
     _require_non_empty_string(config, "data_dir")
     _require_non_empty_string(config, "output_dir")
@@ -235,23 +243,23 @@ def _validate_pairlist(config: dict[str, Any]) -> None:
     if not isinstance(pairlist, list):
         raise ValueError("Config value 'pairlist' must be a list of strings (e.g. 'EXCHANGE:SYMBOL')")
     for i, entry in enumerate(pairlist):
-        if not isinstance(entry, str) or not entry.strip():
-            raise ValueError(
-                f"Config value 'pairlist[{i}]' must be a non-empty string"
-            )
-        parts = entry.split(":")
-        if len(parts) != 2:
-            raise ValueError(
-                f"Config value 'pairlist[{i}]' has invalid format '{entry}'. "
-                f"Expected 'EXCHANGE:SYMBOL' (e.g. 'NASDAQ:AAPL')."
-            )
-        if not parts[0].strip() or not parts[1].strip():
-            raise ValueError(
-                f"Config value 'pairlist[{i}]' has invalid format '{entry}'. "
-                f"Both exchange and symbol must be non-empty."
-            )
+        _require_pair_string(entry, key=f"pairlist[{i}]")
 
 
+def _require_pair_string(value: Any, *, key: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Config value '{key}' must be a non-empty string")
+    parts = value.split(":")
+    if len(parts) != 2:
+        raise ValueError(
+            f"Config value '{key}' has invalid format '{value}'. "
+            f"Expected 'EXCHANGE:SYMBOL' (e.g. 'NASDAQ:AAPL')."
+        )
+    if not parts[0].strip() or not parts[1].strip():
+        raise ValueError(
+            f"Config value '{key}' has invalid format '{value}'. "
+            f"Both exchange and symbol must be non-empty."
+        )
 def _require_choice(
     config: dict[str, Any],
     key: str,

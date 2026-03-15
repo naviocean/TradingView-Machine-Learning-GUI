@@ -27,6 +27,12 @@
             "enum": ["regular", "extended"],
             "default": "regular"
         },
+        "mode": {
+            "type": "string",
+            "description": "Default trade direction mode for backtesting and optimization.",
+            "enum": ["long", "short", "both"],
+            "default": "long"
+        },
         "strategy": {
             "type": "string",
             "description": "Name of the strategy class to use for backtesting and optimization. Must match a registered strategy_name.",

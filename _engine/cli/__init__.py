@@ -24,7 +24,12 @@ def build_parser() -> argparse.ArgumentParser:
     # ------ download-data ------
     dl = subparsers.add_parser("download-data", help="Download candle data for one or more pairs")
     dl.add_argument("--pairs", nargs="+", default=None, help="Pairs to download (e.g. NASDAQ:NFLX COINBASE:BTCUSD); falls back to config pairlist")
-    dl.add_argument("--timeframe", default=None)
+    dl.add_argument(
+        "--timeframe",
+        nargs="+",
+        default=None,
+        help="One or more bar intervals to download (e.g. 1h 15m); falls back to config timeframe",
+    )
     dl.add_argument("--start", default=None)
     dl.add_argument("--end", default=None)
     dl.add_argument("--session", default=None)
@@ -39,9 +44,10 @@ def build_parser() -> argparse.ArgumentParser:
     bt.add_argument("--session", default=None)
     bt.add_argument("--adjustment", default="splits", help="Price adjustment: splits, dividends, none (default: splits)")
     bt.add_argument("--strategy", default=None, help="Strategy name (default: from config)")
-    bt.add_argument("--sl", type=float, required=True, help="Stop-loss %%")
-    bt.add_argument("--tp", type=float, required=True, help="Take-profit %%")
-    bt.add_argument("--mode", choices=["long", "short", "both"], default="long")
+    bt.add_argument("--preset-file", default=None, help="Path to a strategy preset file created by hyperopt")
+    bt.add_argument("--sl", type=float, default=None, help="Stop-loss %% (falls back to matching preset file entry)")
+    bt.add_argument("--tp", type=float, default=None, help="Take-profit %% (falls back to matching preset file entry)")
+    bt.add_argument("--mode", choices=["long", "short", "both"], default=None)
 
     # ------ hyperopt ------
     ho = subparsers.add_parser("hyperopt", help="Hyper-optimize SL/TP parameters")
@@ -56,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     ho.add_argument("--sl-max", type=float, default=None)
     ho.add_argument("--tp-min", type=float, default=None)
     ho.add_argument("--tp-max", type=float, default=None)
-    ho.add_argument("--mode", choices=["long", "short", "both"], default="long")
+    ho.add_argument("--mode", choices=["long", "short", "both"], default=None)
     ho.add_argument(
         "--objective",
         choices=["net_profit_pct", "profit_factor", "win_rate_pct", "max_drawdown_pct", "trade_count"],
@@ -75,7 +81,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Number of Bayesian optimization trials (ignored for grid search)",
     )
-
     # ------ list-data ------
     subparsers.add_parser("list-data", help="List cached candle datasets")
 

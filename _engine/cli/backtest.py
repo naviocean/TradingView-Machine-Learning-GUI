@@ -5,7 +5,8 @@ import time
 import logging
 
 from .._utils import _format_time, build_risk
-from ..models import BacktestMetrics, CandleRequest
+from ..models import BacktestMetrics, BacktestResult, CandleRequest
+from ..presets import find_preset, strategy_preset_path
 from ..backtest.engine import TradingViewLikeBacktester
 from ._helpers import _resolve, load_candles, generate_signals, resolve_pairlist, print_summary_table
 from strategy import list_strategies
@@ -28,12 +29,13 @@ def _run_single_backtest(
     *,
     pair_index: int = 1,
     pair_total: int = 1,
-) -> BacktestMetrics | None:
+) -> BacktestResult | None:
     
     pair_label = f"{exchange}:{symbol}"
-    tag = f"[{pair_index}/{pair_total}] {pair_label} "
+    tag = f"[{pair_index}/{pair_total}] {pair_label}"
     dot_width = max(40 - len(tag), 3)
-    print(f"\n  {tag}{'.' * dot_width} ", end="", flush=True)
+    prefix = f"\n   {tag} {'.' * dot_width} "
+    print(prefix, end="", flush=True)
 
     candle_request = CandleRequest(
         symbol=symbol,
@@ -72,11 +74,11 @@ def _run_single_backtest(
         result = backtester.run(signal_frame, risk, mode)
         elapsed = _format_time(time.time() - t_total)
 
-        print(f"done ({elapsed})")
-        return result.metrics
+        print(f"✔ {elapsed}")
+        return result
 
     except Exception as e:
-        print(f"failed ({e})")
+        print(f"✘ ({e})")
         logging.exception(f"Error during backtest of {pair_label}")
         return None
 
@@ -92,25 +94,62 @@ def run_backtest(args: argparse.Namespace, config: dict) -> int:
 
     timeframe = _resolve(args, config, "timeframe")
     session = _resolve(args, config, "session")
+    mode = _resolve(args, config, "mode", "long")
     adjustment = args.adjustment
     initial_capital = config.get("initial_capital", 1000.0)
     data_dir = config.get("data_dir", "./data")
+    output_dir = config.get("output_dir", "./results")
+
+    _resolve_preset_file_path(args, output_dir, strategy_name)
 
     pairs = resolve_pairlist(args, config)
     if not pairs:
         print("Error: No trading pairs resolved. Please check your config or arguments.")
         return 1
 
-    print(f"\n{'#' * 60}")
-    print(f"  Running backtest for {len(pairs)} pair(s)")
-    print(f"  Strategy: {strategy_name} | SL={args.sl}% TP={args.tp}%")
-    print(f"{'#' * 60}")
+    resolved_risk: dict[tuple[str, str], tuple[float, float]] = {}
+    risk_source = "CLI values"
+    for symbol, pair_exchange in pairs:
+        try:
+            sl, tp, pair_source = _resolve_backtest_risk(
+                args=args,
+                symbol=symbol,
+                exchange=pair_exchange,
+                strategy_name=strategy_name,
+                timeframe=timeframe,
+                session=session,
+                adjustment=adjustment,
+                mode=mode,
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}")
+            return 1
+        resolved_risk[(symbol, pair_exchange)] = (sl, tp)
+        if pair_source != "cli":
+            risk_source = "matching preset file entry"
+        elif args.sl is None or args.tp is None:
+            risk_source = "CLI/preset-file mixed fallback"
 
-    all_metrics: list[tuple[str, str, BacktestMetrics]] = []
+    from rich.console import Console
+    console = Console()
+
+    line = "─" * 72
+    console.print(f"\n ⚙ CONFIGURATION")
+    console.print(f" {line}")
+    console.print(f"   Strategy : {strategy_name} (mode: {mode})")
+    if args.sl is not None and args.tp is not None:
+        console.print(f"   Risk     : SL={args.sl}% TP={args.tp}%")
+    else:
+        console.print(f"   Risk     : {risk_source}")
+    console.print(f" {line}")
+    console.print(f"\n ⏳ RUNNING BACKTEST ({len(pairs)} Pair{'s' if len(pairs) != 1 else ''})")
+
+    all_results: list[tuple[str, str, BacktestResult]] = []
     rc = 0
     
     for idx, (symbol, pair_exchange) in enumerate(pairs, 1):
-        m = _run_single_backtest(
+        sl, tp = resolved_risk[(symbol, pair_exchange)]
+        result = _run_single_backtest(
             symbol=symbol,
             exchange=pair_exchange,
             timeframe=timeframe,
@@ -119,19 +158,86 @@ def run_backtest(args: argparse.Namespace, config: dict) -> int:
             strategy_name=strategy_name,
             initial_capital=initial_capital,
             data_dir=data_dir,
-            mode=args.mode,
-            sl=args.sl,
-            tp=args.tp,
+            mode=mode,
+            sl=sl,
+            tp=tp,
             start=args.start,
             end=args.end,
             pair_index=idx,
             pair_total=len(pairs),
         )
-        if m is None:
+        if result is None:
             rc = 1
         else:
-            all_metrics.append((symbol, pair_exchange, m))
+            all_results.append((symbol, pair_exchange, result))
 
-    print_summary_table(all_metrics)
+    print_summary_table(all_results, initial_equity=initial_capital)
 
     return rc
+
+
+def _resolve_backtest_risk(
+    *,
+    args: argparse.Namespace,
+    symbol: str,
+    exchange: str,
+    strategy_name: str,
+    timeframe: str,
+    session: str,
+    adjustment: str,
+    mode: str,
+) -> tuple[float, float, str]:
+    pair = f"{exchange}:{symbol}"
+    preset = None
+    if args.preset_file is not None:
+        try:
+            preset = find_preset(
+                args.preset_file,
+                strategy=strategy_name,
+                pair=pair,
+                timeframe=timeframe,
+                session=session,
+                adjustment=adjustment,
+                mode=mode,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            raise ValueError(str(exc)) from exc
+
+    sl = args.sl if args.sl is not None else (preset.get("sl") if preset is not None else None)
+    tp = args.tp if args.tp is not None else (preset.get("tp") if preset is not None else None)
+    if sl is None or tp is None:
+        preset_hint = (
+            f" or pass --preset-file {args.preset_file}"
+            if args.preset_file is not None
+            else " or pass --preset-file <path-to-strategy-presets.json>"
+        )
+        raise ValueError(
+            f"Missing SL/TP for {pair}. Provide --sl and --tp{preset_hint}. "
+            f"Expected a matching preset for timeframe={timeframe}, session={session}, "
+            f"adjustment={adjustment}, mode={mode}."
+        )
+    source = "cli" if args.sl is not None and args.tp is not None else "preset"
+    return float(sl), float(tp), source
+
+
+def _resolve_preset_file_path(
+    args: argparse.Namespace,
+    output_dir: str,
+    strategy_name: str,
+) -> None:
+    """Resolve --preset-file to an absolute path, falling back to the output dir."""
+    from pathlib import Path
+
+    if args.preset_file is not None:
+        # If it's a bare filename (no directory separators), look in output_dir
+        given = Path(args.preset_file)
+        if given.parent == Path("."):
+            candidate = Path(output_dir) / given
+            if candidate.is_file():
+                args.preset_file = str(candidate)
+    else:
+        # Auto-detect: look for <strategy>_presets.json in output_dir
+        if args.sl is None or args.tp is None:
+            candidate = strategy_preset_path(output_dir, strategy_name)
+            if candidate.is_file():
+                args.preset_file = str(candidate)

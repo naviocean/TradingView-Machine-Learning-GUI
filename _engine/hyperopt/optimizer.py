@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import sys
 import time
 from pathlib import Path
@@ -20,14 +19,10 @@ def _print_progress(current: int, total: int, start_time: float, phase: str) -> 
     bar_width = 30
     filled = int(bar_width * current // total)
     bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
-    if current > 0:
-        eta = elapsed / current * (total - current)
-        eta_str = f"ETA {_format_time(eta)}"
-    else:
-        eta_str = "ETA --"
+    time_str = _format_time(elapsed)
+    label = f"   \u2022 {phase}:"
     sys.stdout.write(
-        f"\r  {phase}: |{bar}| {pct:5.1f}%  [{current}/{total}]  "
-        f"elapsed {_format_time(elapsed)}  {eta_str}   "
+        f"\r{label:<20}|{bar}| {pct:3.0f}% [{current}/{total}] {time_str}   "
     )
     sys.stdout.flush()
     if current == total:
@@ -80,13 +75,12 @@ class _Optimizer:
         coarse_tp_step = _auto_step(request.tp_min, request.tp_max)
         sl_values = _build_range(request.sl_min, request.sl_max, coarse_sl_step)
         tp_values = _build_range(request.tp_min, request.tp_max, coarse_tp_step)
-        print(f"\n[Coarse grid] {len(sl_values)} SL x {len(tp_values)} TP = {len(sl_values) * len(tp_values)} combinations")
         coarse_results = self._evaluate_grid(
             mode=request.mode,
             objective=request.objective,
             sl_values=sl_values,
             tp_values=tp_values,
-            phase="Coarse",
+            phase="Coarse grid",
         )
 
         best_coarse = coarse_results[0]
@@ -94,13 +88,12 @@ class _Optimizer:
         fine_tp_step = max(coarse_tp_step / 2.0, 0.0001)
         fine_sl = _refine_range(best_coarse.sl_pct, request.sl_min, request.sl_max, coarse_sl_step, fine_sl_step)
         fine_tp = _refine_range(best_coarse.tp_pct, request.tp_min, request.tp_max, coarse_tp_step, fine_tp_step)
-        print(f"\n[Fine grid] {len(fine_sl)} SL x {len(fine_tp)} TP = {len(fine_sl) * len(fine_tp)} combinations  (best coarse SL={best_coarse.sl_pct:.4f}% TP={best_coarse.tp_pct:.4f}%)")
         fine_results = self._evaluate_grid(
             mode=request.mode,
             objective=request.objective,
             sl_values=fine_sl,
             tp_values=fine_tp,
-            phase="Fine",
+            phase="Fine grid",
         )
 
         combined = _deduplicate_and_rank(coarse_results + fine_results, request.objective)
@@ -111,7 +104,6 @@ class _Optimizer:
             coarse_results=coarse_results[: request.top_n],
             output_path=output_path,
         )
-        _write_output(bundle)
         return bundle
 
     def _optimize_bayesian(self, request: OptimizationRequest, output_path: Path) -> OptimizationBundle:
@@ -125,15 +117,13 @@ class _Optimizer:
         all_results: list[BacktestMetrics] = []
         start_time = time.time()
 
-        print(f"\n[Bayesian] {n_trials} trials via Optuna TPE  (SL {request.sl_min}–{request.sl_max}, TP {request.tp_min}–{request.tp_max})")
-
         def objective(trial: optuna.Trial) -> float:
             sl_value = trial.suggest_float("sl_pct", request.sl_min, request.sl_max, step=0.01)
             tp_value = trial.suggest_float("tp_pct", request.tp_min, request.tp_max, step=0.01)
             risk = build_risk(request.mode, sl_value, tp_value)
             result = self.backtester.run(self.signal_frame, risk, request.mode)
             all_results.append(result.metrics)
-            _print_progress(len(all_results), n_trials, start_time, "Bayesian")
+            _print_progress(len(all_results), n_trials, start_time, "Optuna TPE")
             return _objective_value(result.metrics, objective_name)
 
         direction = "minimize" if minimize else "maximize"
@@ -148,7 +138,6 @@ class _Optimizer:
             coarse_results=[],
             output_path=output_path,
         )
-        _write_output(bundle)
         return bundle
 
     def _evaluate_grid(
@@ -229,13 +218,12 @@ class _MultiPairOptimizer:
         coarse_tp_step = _auto_step(request.tp_min, request.tp_max)
         sl_values = _build_range(request.sl_min, request.sl_max, coarse_sl_step)
         tp_values = _build_range(request.tp_min, request.tp_max, coarse_tp_step)
-        print(f"\n[Coarse grid] {len(sl_values)} SL x {len(tp_values)} TP = {len(sl_values) * len(tp_values)} combinations  ({len(self.pair_data)} pairs each)")
         coarse_results = self._evaluate_grid(
             mode=request.mode,
             objective=request.objective,
             sl_values=sl_values,
             tp_values=tp_values,
-            phase="Coarse",
+            phase="Coarse grid",
         )
 
         best_coarse = coarse_results[0]
@@ -243,13 +231,12 @@ class _MultiPairOptimizer:
         fine_tp_step = max(coarse_tp_step / 2.0, 0.0001)
         fine_sl = _refine_range(best_coarse.sl_pct, request.sl_min, request.sl_max, coarse_sl_step, fine_sl_step)
         fine_tp = _refine_range(best_coarse.tp_pct, request.tp_min, request.tp_max, coarse_tp_step, fine_tp_step)
-        print(f"\n[Fine grid] {len(fine_sl)} SL x {len(fine_tp)} TP = {len(fine_sl) * len(fine_tp)} combinations  (best coarse SL={best_coarse.sl_pct:.4f}% TP={best_coarse.tp_pct:.4f}%)")
         fine_results = self._evaluate_grid(
             mode=request.mode,
             objective=request.objective,
             sl_values=fine_sl,
             tp_values=fine_tp,
-            phase="Fine",
+            phase="Fine grid",
         )
 
         combined = _deduplicate_and_rank_multi(coarse_results + fine_results, request.objective)
@@ -262,7 +249,6 @@ class _MultiPairOptimizer:
             coarse_results=coarse_results[: request.top_n],
             output_path=output_path,
         )
-        _write_multi_output(bundle)
         return bundle
 
     def _optimize_bayesian(self, request: OptimizationRequest, output_path: Path) -> MultiPairOptimizationBundle:
@@ -276,14 +262,12 @@ class _MultiPairOptimizer:
         all_candidates: list[MultiPairCandidate] = []
         start_time = time.time()
 
-        print(f"\n[Bayesian] {n_trials} trials via Optuna TPE  (SL {request.sl_min}\u2013{request.sl_max}, TP {request.tp_min}\u2013{request.tp_max}, {len(self.pair_data)} pairs)")
-
         def objective(trial: optuna.Trial) -> float:
             sl_value = trial.suggest_float("sl_pct", request.sl_min, request.sl_max, step=0.01)
             tp_value = trial.suggest_float("tp_pct", request.tp_min, request.tp_max, step=0.01)
             candidate = self._evaluate_candidate(request.mode, sl_value, tp_value, objective_name)
             all_candidates.append(candidate)
-            _print_progress(len(all_candidates), n_trials, start_time, "Bayesian")
+            _print_progress(len(all_candidates), n_trials, start_time, "Optuna TPE")
             return _multi_objective_value(candidate, objective_name)
 
         direction = "minimize" if minimize else "maximize"
@@ -302,7 +286,6 @@ class _MultiPairOptimizer:
             coarse_results=[],
             output_path=output_path,
         )
-        _write_multi_output(bundle)
         return bundle
 
     def _evaluate_grid(
@@ -329,12 +312,6 @@ class _MultiPairOptimizer:
 # ------------------------------------------------------------------
 # Stateless helpers
 # ------------------------------------------------------------------
-
-def _write_output(bundle: OptimizationBundle) -> None:
-    bundle.output_path.write_text(
-        json.dumps(bundle.to_dict(), indent=2),
-        encoding="utf-8",
-    )
 
 
 def _deduplicate_and_rank(results: list[BacktestMetrics], objective: Objective) -> list[BacktestMetrics]:
@@ -438,15 +415,6 @@ def _build_candidate(
         aggregate_objective=agg_obj,
         per_pair_metrics=per_pair,
     )
-
-
-def _write_multi_output(bundle: MultiPairOptimizationBundle) -> None:
-    bundle.output_path.write_text(
-        json.dumps(bundle.to_dict(), indent=2),
-        encoding="utf-8",
-    )
-
-
 def _multi_objective_value(candidate: MultiPairCandidate, objective: Objective) -> float:
     """Return the sortable objective value for a multi-pair candidate."""
     if objective == "max_drawdown_pct":

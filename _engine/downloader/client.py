@@ -115,6 +115,22 @@ class TradingViewDataClient:
 
 def _parse_cache_stem(stem: str) -> tuple[str | None, str | None, str | None, str, str]:
     """Parse cache filename stem across legacy and current naming conventions."""
+    # Preferred:
+    #   TF-session-EXCHANGE-SYMBOL
+    #   TF-session-EXCHANGE-SYMBOL-adjustment (only for non-default adjustment)
+    hyphen_parts = stem.split("-", 3)
+    if len(hyphen_parts) == 4:
+        timeframe, session, exchange, symbol_part = hyphen_parts
+        adjustment = "splits"
+        for candidate in ("dividends", "none"):
+            suffix = f"-{candidate}"
+            if symbol_part.endswith(suffix):
+                symbol_part = symbol_part[: -len(suffix)]
+                adjustment = candidate
+                break
+        if timeframe and session and exchange and symbol_part:
+            return exchange, symbol_part, timeframe, session, adjustment
+
     # Legacy with explicit metadata suffixes:
     #   EX_SYM_TF__session-extended__adj-splits
     if "__" in stem:

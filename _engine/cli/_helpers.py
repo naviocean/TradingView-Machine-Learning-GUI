@@ -62,15 +62,18 @@ def load_candles(
     *,
     step: str = "",
     quiet: bool = False,
+    compact: bool = False,
 ) -> pd.DataFrame:
     """Load cached candle data and print progress."""
-    if not quiet:
+    if not quiet and not compact:
         print(f"\n[{step}] Loading candle data...")
     t0 = time.time()
     client = TradingViewDataClient(cache_dir=data_dir)
     candles = client.get_history(candle_request, cache_only=True)
-    if not quiet:
+    if not quiet and not compact:
         print(f"      {len(candles)} candles loaded ({_format_time(time.time() - t0)})")
+    if compact:
+        print(f"   \u2022 Data    : {len(candles):,} candles loaded ({_format_time(time.time() - t0)})")
     return candles
 
 
@@ -83,9 +86,11 @@ def generate_signals(
     *,
     step: str = "",
     quiet: bool = False,
+    compact: bool = False,
+    density_suffix: str = "",
 ) -> tuple[pd.DataFrame, "get_strategy"]:
     """Instantiate strategy, generate signals, and print progress."""
-    if not quiet:
+    if not quiet and not compact:
         print(f"\n[{step}] Generating signals...")
     t0 = time.time()
     strategy = get_strategy(strategy_name)
@@ -98,121 +103,313 @@ def generate_signals(
     signal_frame = strategy.generate_signals(candles, signal_settings)
     buy_count = int(signal_frame["buy_signal"].sum())
     sell_count = int(signal_frame["sell_signal"].sum())
-    if not quiet:
+    if not quiet and not compact:
         print(f"      {buy_count} buy / {sell_count} sell signals ({_format_time(time.time() - t0)})")
+    if compact:
+        print(f"   \u2022 Signals : {buy_count} buy / {sell_count} sell{density_suffix}")
     return signal_frame, strategy
 
 
 # ---------------------------------------------------------------------------
-# Shared summary table
+# Compact hyperopt results table (rich)
 # ---------------------------------------------------------------------------
 
-def print_summary_table(
-    all_metrics: list[tuple[str, str, "BacktestMetrics"]],
-    *,
-    title: str = "Backtest Summary",
+def _hyperopt_arrow(value: float, fmt: str = ".1f", *, invert: bool = False) -> str:
+    """Return an arrow-decorated string for rich markup (hyperopt variant)."""
+    suffix = "%"
+    if invert:
+        return f"[red]▼ {abs(value):{fmt}}{suffix}[/red]"
+    if value > 0:
+        return f"[green]▲ {value:{fmt}}{suffix}[/green]"
+    if value < 0:
+        return f"[red]▼ {abs(value):{fmt}}{suffix}[/red]"
+    return f"{value:{fmt}}{suffix}"
+
+
+def print_hyperopt_table(
+    results: list,
+    top_n: int,
 ) -> None:
-    """Print a tabular summary of all pair results plus an aggregate row.
+    """Print a rich-formatted table of top hyperopt results."""
+    from rich.console import Console
+    from rich.table import Table
+    import rich.box
 
-    Re-used by both the backtest and hyperopt CLI commands so that output
-    formatting stays consistent.
-    """
-    from ..models import BacktestMetrics  # noqa: F811 – lazy to avoid circular
-
-    if not all_metrics:
+    if not results:
         return
 
-    # Dynamically size the Pair column
-    pair_col_name = "Pair"
-    max_pair = max(len(f"{ex}:{sym}") for sym, ex, _ in all_metrics)
-    max_pair = max(max_pair, len(pair_col_name))
+    shown = results[:top_n]
+    n = len(shown)
+    console = Console()
 
-    # Reusable format string for perfect column alignment
-    row_fmt = (
-        "  {idx:>3}  {pair:<{max_pair}}  {net:>+8.2f}%  {dd:>8.2f}%  "
-        "{sharpe:>7.2f}  {calmar:>7.2f}  {wr:>9.2f}%  {pf:>9}  "
-        "{exp:>+8.2f}%  {avg_w:>+9.2f}%  {avg_l:>+10.2f}%  {worst:>+11.2f}%  "
-        "{mcl:>11}  {trades:>7}  {sl_tp_sig:>15}  ${eq:>13,.2f}"
+    table = Table(
+        title=f"\U0001f3c6 Top {n} Optimization Results",
+        title_style="bold",
+        box=rich.box.ROUNDED,
+        pad_edge=True,
+        show_lines=False,
     )
 
-    hdr = (
-        f"  {'':>3}  {pair_col_name:<{max_pair}}  {'Return %':>9}  {'Max DD %':>9}  "
-        f"{'Sharpe':>7}  {'Calmar':>7}  {'Win Rate %':>10}  {'Prof Fact':>9}  "
-        f"{'Expect %':>9}  {'Avg Win %':>10}  {'Avg Loss %':>11}  {'Worst Trade':>12}  "
-        f"{'Loss Streak':>11}  {'Trades':>7}  {'Exits(SL/TP/Sg)':>15}  {'Final Equity':>14}"
+    # Parameter columns (cyan styling)
+    table.add_column("SL %", justify="right", style="cyan", no_wrap=True)
+    table.add_column("TP %", justify="right", style="cyan", no_wrap=True)
+    # Metric columns
+    table.add_column("Return", justify="right", no_wrap=True)
+    table.add_column("Max DD", justify="right", no_wrap=True)
+    table.add_column("Shrp", justify="right", no_wrap=True)
+    table.add_column("Win %", justify="right", no_wrap=True)
+    table.add_column("PF", justify="right", no_wrap=True)
+    table.add_column("Trds", justify="right", no_wrap=True)
+    table.add_column("Final Eq.", justify="right", no_wrap=True)
+
+    for m in shown:
+        pf_str = f"{m.profit_factor:.2f}" if m.profit_factor != float("inf") else "∞"
+        table.add_row(
+            f"{m.sl_pct:.2f}",
+            f"{m.tp_pct:.2f}",
+            _hyperopt_arrow(m.net_profit_pct),
+            _hyperopt_arrow(m.max_drawdown_pct, invert=True),
+            f"{m.sharpe_ratio:.2f}",
+            f"{m.win_rate_pct:.1f}%",
+            pf_str,
+            str(m.trade_count),
+            f"${m.equity_final:,.0f}",
+        )
+
+    console.print()
+    console.print(table, justify="left")
+
+
+# ---------------------------------------------------------------------------
+# Shared summary table (rich)
+# ---------------------------------------------------------------------------
+
+def _arrow(value: float, fmt: str = ".1f", *, pct: bool = True, invert: bool = False) -> str:
+    """Return an arrow-decorated string for rich markup.
+
+    Parameters
+    ----------
+    value : float
+        The numeric value to display.
+    fmt : str
+        Format spec for the number (default ".1f").
+    pct : bool
+        Whether to append a percent sign.
+    invert : bool
+        If True, positive is bad (red) and negative is good (green) — used for
+        drawdown / worst-trade where the value is already negative or represents loss.
+    """
+    suffix = "%" if pct else ""
+    formatted = f"{value:{fmt}}{suffix}"
+    if invert:
+        return f"[red]▼ {abs(value):{fmt}}{suffix}[/red]"
+    if value > 0:
+        return f"[green]▲ {formatted}[/green]"
+    if value < 0:
+        return f"[red]▼ {abs(value):{fmt}}{suffix}[/red]"
+    return formatted
+
+
+def print_summary_table(
+    all_results: list[tuple[str, str, "BacktestResult"]],
+    *,
+    initial_equity: float = 100_000.0,
+    title: str = "BACKTEST SUMMARY",
+) -> None:
+    """Print a rich-formatted summary table with a true PORTFOLIO aggregate row."""
+    from ..models import BacktestResult  # noqa: lazy import
+
+    import math
+    from rich.console import Console
+    from rich.table import Table
+
+    if not all_results:
+        return
+
+    console = Console()
+
+    # ── Build the table ──────────────────────────────────────────────
+    table = Table(
+        title=f"📊 {title}",
+        title_style="bold",
+        show_lines=False,
+        pad_edge=True,
+        box=__import__("rich.box", fromlist=["ROUNDED"]).ROUNDED,
     )
-    sep = "  " + "-" * (len(hdr) - 2)
 
-    print(f"\n{'=' * len(hdr)}")
-    print(f"  {title}")
-    print(f"{'=' * len(hdr)}")
-    print(hdr)
-    print(sep)
+    table.add_column("#", justify="right", style="dim", no_wrap=True)
+    table.add_column("Pair", justify="left", no_wrap=True)
+    table.add_column("Return", justify="right", no_wrap=True)
+    table.add_column("Max DD", justify="right", no_wrap=True)
+    table.add_column("Shrp", justify="right", no_wrap=True)
+    table.add_column("Cal", justify="right", no_wrap=True)
+    table.add_column("Win %", justify="right", no_wrap=True)
+    table.add_column("PF", justify="right", no_wrap=True)
+    table.add_column("Expect", justify="right", no_wrap=True)
+    table.add_column("Avg W/L %", justify="right", no_wrap=True)
+    table.add_column("Worst", justify="right", no_wrap=True)
+    table.add_column("L.S", justify="right", no_wrap=True)
+    table.add_column("Trds", justify="right", no_wrap=True)
+    table.add_column("SL/TP/S", justify="right", no_wrap=True)
+    table.add_column("Final Eq.", justify="right", no_wrap=True)
 
-    # Accumulators for aggregate row
-    total_net, total_trades, worst_dd, total_equity = 0.0, 0, 0.0, 0.0
-    sharpe_sum, calmar_sum, exp_sum = 0.0, 0.0, 0.0
-    avg_w_sum, avg_l_sum = 0.0, 0.0
-    worst_trade_all = 0.0
-    max_consec_all = 0
+    # ── Helper to format a single data row ───────────────────────────
+    def _row(
+        idx: str,
+        pair: str,
+        m_net: float,
+        m_dd: float,
+        m_sharpe: float,
+        m_calmar: float,
+        m_wr: float,
+        m_pf: float,
+        m_exp: float,
+        m_avg_w: float,
+        m_avg_l: float,
+        m_worst: float,
+        m_mcl: int,
+        m_trades: int,
+        m_sl_tp_sig: str,
+        m_eq: float,
+        *,
+        is_portfolio: bool = False,
+    ) -> list[str]:
+        pf_str = f"{m_pf:.2f}" if m_pf != float("inf") else "∞"
+        avg_wl = f"+{m_avg_w:.1f}/{m_avg_l:.1f}" if m_avg_l <= 0 else f"+{m_avg_w:.1f}/+{m_avg_l:.1f}"
+        style = "bold" if is_portfolio else ""
+        return [
+            idx,
+            f"[{style}]{pair}[/{style}]" if style else pair,
+            _arrow(m_net),
+            _arrow(m_dd, invert=True),
+            f"{m_sharpe:.2f}",
+            f"{m_calmar:.1f}" if abs(m_calmar) < 100 else f"{m_calmar:.0f}",
+            f"{m_wr:.1f}%",
+            pf_str,
+            _arrow(m_exp),
+            avg_wl,
+            _arrow(m_worst, invert=True),
+            str(m_mcl),
+            str(m_trades),
+            m_sl_tp_sig,
+            f"${m_eq:,.0f}",
+        ]
 
-    # Back-calculate raw counts for aggregate percentages
-    total_wins, total_sl, total_tp, total_sig = 0, 0.0, 0.0, 0.0
+    # ── Add per-pair rows ────────────────────────────────────────────
+    all_trades_combined = []
+    all_equity_curves = []
 
-    for i, (symbol, exchange, m) in enumerate(all_metrics, 1):
+    for i, (symbol, exchange, result) in enumerate(all_results, 1):
+        m = result.metrics
         pair = f"{exchange}:{symbol}"
         sl_tp_sig = f"{m.sl_exit_pct:.0f}/{m.tp_exit_pct:.0f}/{m.signal_exit_pct:.0f}"
 
-        print(row_fmt.format(
-            idx=i, pair=pair, max_pair=max_pair, net=m.net_profit_pct, dd=m.max_drawdown_pct,
-            sharpe=m.sharpe_ratio, calmar=m.calmar_ratio, wr=m.win_rate_pct, pf=f"{m.profit_factor:.2f}",
-            exp=m.expectancy_pct, avg_w=m.avg_win_pct, avg_l=m.avg_loss_pct, worst=m.worst_trade_pct,
-            mcl=m.max_consec_losses, trades=m.trade_count, sl_tp_sig=sl_tp_sig, eq=m.equity_final
+        table.add_row(*_row(
+            str(i), pair, m.net_profit_pct, m.max_drawdown_pct,
+            m.sharpe_ratio, m.calmar_ratio, m.win_rate_pct, m.profit_factor,
+            m.expectancy_pct, m.avg_win_pct, m.avg_loss_pct, m.worst_trade_pct,
+            m.max_consec_losses, m.trade_count, sl_tp_sig, m.equity_final,
         ))
 
-        # Accumulate metrics
-        total_net += m.net_profit_pct
-        total_trades += m.trade_count
-        total_equity += m.equity_final
-        sharpe_sum += m.sharpe_ratio
-        calmar_sum += m.calmar_ratio
-        exp_sum += m.expectancy_pct
-        avg_w_sum += m.avg_win_pct
-        avg_l_sum += m.avg_loss_pct
+        all_trades_combined.extend(result.trades)
+        all_equity_curves.append(result.equity_curve)
 
-        worst_dd = max(worst_dd, m.max_drawdown_pct)
-        worst_trade_all = min(worst_trade_all, m.worst_trade_pct)
-        max_consec_all = max(max_consec_all, m.max_consec_losses)
-
-        if m.trade_count > 0:
-            total_wins += round(m.win_rate_pct / 100 * m.trade_count)
-            total_sl += m.sl_exit_pct / 100 * m.trade_count
-            total_tp += m.tp_exit_pct / 100 * m.trade_count
-            total_sig += m.signal_exit_pct / 100 * m.trade_count
-
-    print(sep)
-
-    # Print TOTAL row if there are multiple pairs
-    n = len(all_metrics)
+    # ── PORTFOLIO aggregate row (only when multiple pairs) ───────────
+    n = len(all_results)
     if n > 1:
-        avg_net = total_net / n
-        avg_win = (total_wins / total_trades * 100) if total_trades > 0 else 0.0
-        avg_sharpe = sharpe_sum / n
-        avg_calmar = calmar_sum / n
-        avg_expect = exp_sum / n
-        avg_w = avg_w_sum / n
-        avg_l = avg_l_sum / n
+        table.add_section()
 
-        agg_sl = (total_sl / total_trades * 100) if total_trades > 0 else 0.0
-        agg_tp = (total_tp / total_trades * 100) if total_trades > 0 else 0.0
-        agg_sig = (total_sig / total_trades * 100) if total_trades > 0 else 0.0
-        sl_tp_sig_agg = f"{agg_sl:.0f}/{agg_tp:.0f}/{agg_sig:.0f}"
+        # Combined equity curve: sum bar-by-bar equity across all pairs.
+        # Curves may differ in length; pad shorter ones with their last value.
+        max_len = max(len(ec) for ec in all_equity_curves)
+        combined_curve = [0.0] * max_len
+        for ec in all_equity_curves:
+            last = ec[-1] if ec else initial_equity
+            for j in range(max_len):
+                combined_curve[j] += ec[j] if j < len(ec) else last
 
-        print(row_fmt.format(
-            idx="", pair="TOTAL / AVG", max_pair=max_pair, net=avg_net, dd=worst_dd,
-            sharpe=avg_sharpe, calmar=avg_calmar, wr=avg_win, pf="",
-            exp=avg_expect, avg_w=avg_w, avg_l=avg_l, worst=worst_trade_all,
-            mcl=max_consec_all, trades=total_trades, sl_tp_sig=sl_tp_sig_agg, eq=total_equity
+        total_initial = initial_equity * n
+        total_final = sum(r.metrics.equity_final for _, _, r in all_results)
+
+        # Return %: true portfolio return
+        port_return = ((total_final - total_initial) / total_initial) * 100.0
+
+        # Max DD % from combined equity curve
+        peak = combined_curve[0]
+        port_max_dd = 0.0
+        for v in combined_curve:
+            if v > peak:
+                peak = v
+            if peak > 0:
+                dd = ((peak - v) / peak) * 100.0
+                if dd > port_max_dd:
+                    port_max_dd = dd
+
+        # Sharpe from combined equity curve bar returns
+        port_sharpe = 0.0
+        if len(combined_curve) > 1:
+            returns = []
+            for j in range(1, len(combined_curve)):
+                prev = combined_curve[j - 1]
+                if prev != 0:
+                    returns.append((combined_curve[j] - prev) / prev)
+            if returns:
+                mean_r = sum(returns) / len(returns)
+                var_r = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+                std_r = math.sqrt(var_r)
+                if std_r > 0:
+                    # Use the timeframe from the first result for annualisation
+                    from ..backtest.engine import _annualization_factor
+                    tf = all_results[0][2].metrics.timeframe
+                    port_sharpe = (mean_r / std_r) * _annualization_factor(tf)
+
+        # Calmar from combined equity curve
+        port_calmar = port_return / port_max_dd if port_max_dd > 0 else 0.0
+
+        # Win rate, PF, expectancy, avg W/L from combined trade pool
+        total_trades = len(all_trades_combined)
+        port_wins = [t for t in all_trades_combined if t.return_pct >= 0]
+        port_losses = [t for t in all_trades_combined if t.return_pct < 0]
+
+        port_win_rate = (len(port_wins) / total_trades * 100.0) if total_trades else 0.0
+
+        gross_win = sum(t.return_pct for t in port_wins)
+        gross_loss = sum(abs(t.return_pct) for t in port_losses)
+        port_pf = (gross_win / gross_loss) if gross_loss > 0 else (float("inf") if gross_win > 0 else 0.0)
+
+        # Expectancy: total combined return % / total combined trades
+        total_return_sum = sum(t.return_pct for t in all_trades_combined)
+        port_exp = (total_return_sum / total_trades) if total_trades else 0.0
+
+        port_avg_w = (sum(t.return_pct for t in port_wins) / len(port_wins)) if port_wins else 0.0
+        port_avg_l = (sum(t.return_pct for t in port_losses) / len(port_losses)) if port_losses else 0.0
+
+        # Worst trade: MIN across all pairs
+        port_worst = min((t.return_pct for t in all_trades_combined), default=0.0)
+
+        # Loss streak: MAX across all pairs
+        port_mcl = max(r.metrics.max_consec_losses for _, _, r in all_results)
+
+        # Exit breakdown: SUM counts then recalculate percentages
+        total_sl = sum(round(r.metrics.sl_exit_pct / 100 * r.metrics.trade_count) for _, _, r in all_results)
+        total_tp = sum(round(r.metrics.tp_exit_pct / 100 * r.metrics.trade_count) for _, _, r in all_results)
+        total_sig = total_trades - total_sl - total_tp
+        if total_trades > 0:
+            sl_p = total_sl / total_trades * 100
+            tp_p = total_tp / total_trades * 100
+            sig_p = total_sig / total_trades * 100
+        else:
+            sl_p = tp_p = sig_p = 0.0
+        port_sl_tp_sig = f"{sl_p:.0f}/{tp_p:.0f}/{sig_p:.0f}"
+
+        table.add_row(*_row(
+            "*", "PORTFOLIO", port_return, port_max_dd,
+            port_sharpe, port_calmar, port_win_rate, port_pf,
+            port_exp, port_avg_w, port_avg_l, port_worst,
+            port_mcl, total_trades, port_sl_tp_sig, total_final,
+            is_portfolio=True,
         ))
 
-    print(f"{'=' * len(hdr)}\n")
+    console.print()
+    console.print(table)
+    console.print()

@@ -10,6 +10,7 @@ Instead of bouncing between Pine scripts, CSV exports, and improvised notebooks,
 
 - **Python 3.11+**
 - **TA-Lib** — installed automatically by `pip install`. Pre-built wheels ship for Python 3.9–3.14 on Windows, macOS, and Linux.
+- **rich** — installed automatically. Powers the styled terminal output (colored tables, progress indicators, panels).
 - **Firefox** *(optional)* — If you have a TradingView paid plan, HyperView can read your Firefox session cookies to download up to **40K candles**. Without it, the websocket still downloads up to **5K candles** anonymously. To use this, just log in to [tradingview.com](https://www.tradingview.com) in Firefox before downloading data.
 
 ## Quick Start
@@ -19,16 +20,16 @@ Instead of bouncing between Pine scripts, CSV exports, and improvised notebooks,
 pip install -e .
 
 # Download data for specific pairs
-hyperview download-data --pairs NASDAQ:NFLX NASDAQ:AAPL --timeframe 1h --start 2023-01-03 --session extended
+hyperview download-data --pairs NASDAQ:NFLX NASDAQ:AAPL --timeframe 1h --session extended
 
-# Or define your pairs in config.json and just run:
-hyperview download-data
+# Or define your pairs in config.json and download multiple timeframes at once:
+hyperview download-data --timeframe 1h 15m --session regular
 
 # Run a single backtest (uses config pairlist)
-hyperview backtest --sl 3.23 --tp 13.06 --mode long --start 2023-01-03
+hyperview backtest --sl 3.23 --tp 13.06 --mode long
 
-# Or target a specific symbol
-hyperview backtest --symbol NASDAQ:NFLX --sl 3.23 --tp 13.06 --mode long --start 2023-01-03
+# Or target a specific symbol using values from a hyperopt preset file
+hyperview backtest --symbol NASDAQ:NFLX --preset-file results/adx_stochastic_presets.json --start 2023-01-03
 
 # Hyper-optimize SL/TP across all pairs in config
 hyperview hyperopt --mode long --start 2023-01-03
@@ -46,15 +47,22 @@ Python bytecode is redirected into the project-level `.pycache/` directory, so r
 
 1. **Download** — Connects to TradingView's websocket using your existing Firefox session cookies. Supports up to 40K historical bars on paid plans with automatic backfill.
 2. **Signal** — Runs a pluggable strategy (e.g. the included MACD+RSI or ADX+Stochastic) in pure Python with TA-Lib indicator parity.
-3. **Backtest** — Simulates trades bar-by-bar using TradingView-parity fill assumptions (next-bar-open entry, intrabar SL/TP exit ordering).
-4. **Hyper-Optimize** — Runs coarse+fine grid search or Bayesian TPE across SL/TP combinations, ranking by your chosen objective.
+3. **Backtest** — Simulates trades bar-by-bar using TradingView-parity fill assumptions (next-bar-open entry, intrabar SL/TP exit ordering). Multi-pair runs produce a true **PORTFOLIO** aggregate row with combined equity-curve statistics.
+4. **Hyper-Optimize** — Runs coarse+fine grid search or Bayesian TPE across SL/TP combinations, then updates a strategy preset file with the best result for each pair/context.
+
+## Terminal Output
+
+Both the backtest and hyperopt commands produce styled terminal output using [rich](https://github.com/Textualize/rich):
+
+- **Backtest summary** — A bordered table with colored directional arrows (▲ green for gains, ▼ red for losses) on Return, Max DD, Expectancy, and Worst Trade. When multiple pairs are run, a **PORTFOLIO** row is appended with mathematically correct aggregate statistics computed from a combined equity curve (not simple averages).
+- **Hyperopt results** — A panel header showing strategy/mode/timeframe, bullet-point data and signal summaries per pair, and a top-N results table with cyan-highlighted parameter columns (SL/TP) visually separated from metric columns.
 
 ## Repository Layout
 
 ```
 pyproject.toml                    Package metadata & `hyperview` CLI entry point
 config.json                       Default configuration (timeframe, pairlist, opt ranges)
-data/                             Cached candle data (CSV, auto-generated)
+data/                             Cached candle data (`timeframe-session-exchange-pair.csv`, auto-generated)
 results/                          Optimization & backtest results (auto-generated)
 strategy/                         Pluggable strategy framework (user-facing)
 ├── __init__.py                   Plugin registry & auto-discovery
@@ -66,6 +74,7 @@ strategy/                         Pluggable strategy framework (user-facing)
 _engine/                          Internal processing logic
 ├── __main__.py                   Module entry point (python -m _engine)
 ├── cli/                          CLI router & subcommand handlers
+│   ├── _helpers.py               Shared formatting helpers (rich tables, arrow decorators)
 │   ├── backtest.py               backtest command
 │   ├── download.py               download-data command
 │   ├── hyperopt.py               hyperopt command
@@ -89,18 +98,20 @@ HyperView loads defaults from `config.json` at the project root. CLI flags alway
 {
     "timeframe": "1h",
     "session": "extended",
-    "strategy": "macd_rsi",
+    "mode": "long",
+    "strategy": "adx_stochastic",
     "initial_capital": 100000,
     "data_dir": "data",
     "output_dir": "results",
     "pairlist": [
         "NASDAQ:NFLX",
         "NASDAQ:TSLA",
-        "COINBASE:BTCUSD"
+        "COINBASE:BTCUSD",
+        "COINBASE:ETHUSD"
     ],
     "optimization": {
         "search_method": "bayesian",
-        "n_trials": 200,
+        "n_trials": 100,
         "objective": "net_profit_pct",
         "top_n": 10,
         "sl_range": { "min": 1.0, "max": 15.0 },
@@ -141,14 +152,14 @@ hyperview --config crypto.json hyperopt --mode long
 # Download all pairs from config pairlist
 hyperview download-data
 
-# Or specify pairs directly
-hyperview download-data --pairs NASDAQ:NFLX NASDAQ:AAPL NASDAQ:TSLA --timeframe 1h --start 2023-01-03
+# Or specify pairs directly, including multiple timeframes
+hyperview download-data --pairs NASDAQ:NFLX NASDAQ:AAPL NASDAQ:TSLA --timeframe 1h 15m --start 2023-01-03
 ```
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--pairs` | No | config pairlist | One or more `EXCHANGE:SYMBOL` pairs (overrides pairlist) |
-| `--timeframe` | No | config | Bar interval: `1m` `5m` `15m` `1h` `4h` `1d` etc. |
+| `--timeframe` | No | config | One or more bar intervals: `1m` `5m` `15m` `1h` `4h` `1d` etc. |
 | `--start` / `--end` | No | — | Date range (ISO format) |
 | `--session` | No | config | `regular` or `extended` |
 | `--adjustment` | No | `splits` | Price adjustment (`splits`, `dividends`, `none`) |
@@ -159,15 +170,18 @@ hyperview download-data --pairs NASDAQ:NFLX NASDAQ:AAPL NASDAQ:TSLA --timeframe 
 # Backtest all pairs from config pairlist
 hyperview backtest --sl 5.0 --tp 5.0 --mode long --start 2023-01-03
 
-# Or target a specific symbol
-hyperview backtest --symbol NASDAQ:NFLX --sl 5.0 --tp 5.0 --mode long --start 2023-01-03
+# Or target a specific symbol using a preset file created by hyperopt
+hyperview backtest --symbol NASDAQ:NFLX --preset-file results/adx_stochastic_presets.json --start 2023-01-03
 ```
+
+If `--sl` and `--tp` are omitted, HyperView looks for a matching entry in the provided `--preset-file` using `pair + timeframe + session + adjustment + mode`. CLI values still override preset-file values.
 
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--symbol` | No | config pairlist | `EXCHANGE:SYMBOL` pair (overrides pairlist) |
-| `--sl` | Yes | — | Stop-loss % |
-| `--tp` | Yes | — | Take-profit % |
+| `--sl` | No* | — | Stop-loss % (*required unless a matching `--preset-file` entry exists) |
+| `--tp` | No* | — | Take-profit % (*required unless a matching `--preset-file` entry exists) |
+| `--preset-file` | No | auto-detected | Path to a strategy preset JSON (auto-detects `<strategy>_presets.json` in output dir) |
 | `--strategy` | No | config | Strategy name (e.g. `macd_rsi`, `adx_stochastic`) |
 | `--mode` | No | `long` | `long`, `short`, or `both` |
 | `--timeframe`, `--session`, `--adjustment`, `--start`, `--end` | No | config / defaults | Standard filters |
@@ -175,7 +189,7 @@ hyperview backtest --symbol NASDAQ:NFLX --sl 5.0 --tp 5.0 --mode long --start 20
 ### `hyperopt` — Hyper-Optimize SL/TP
 
 ```bash
-# Optimize all pairs from config pairlist
+# Optimize all pairs from config pairlist (runs one optimization per pair)
 hyperview hyperopt --search-method bayesian --n-trials 300
 
 # Or target a specific symbol
@@ -283,15 +297,15 @@ Then use it: `hyperview backtest --symbol NASDAQ:NFLX --strategy my_strategy --s
 
 ## Output Files
 
-Hyperopt writes a JSON file to `results/`:
+Hyperopt updates a strategy preset file in `results/`:
 
 ```
-results/macd_rsi_NASDAQ_NFLX_1h_long.json
+results/macd_rsi_presets.json
 ```
 
-The filename encodes `{strategy}_{exchange}_{symbol}_{timeframe}_{mode}` so each
-combination produces its own file. The JSON contains the full request parameters,
-ranked results, and coarse grid results (grid mode only).
+Each file stores one best preset per exact `pair + timeframe + session + adjustment + mode`
+combination for that strategy. Re-running hyperopt replaces only the matching entry
+and preserves other contexts already saved in the file.
 
 ## Backtest Assumptions
 
