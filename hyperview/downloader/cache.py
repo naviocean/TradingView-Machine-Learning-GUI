@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from ...models import CandleRequest
+from ..models import CandleRequest
 from .timeframes import to_timestamp
 
 
@@ -35,7 +35,6 @@ class CandleCache:
         start = to_timestamp(request.start)
         end = to_timestamp(request.end)
         if start is None and end is None:
-            # No explicit range requested — cache is valid as-is.
             return True
         start_ok = True if start is None else int(frame["time"].min()) <= start
         end_ok = True if end is None else int(frame["time"].max()) >= end
@@ -54,31 +53,28 @@ class CandleCache:
         return preferred
 
     def _stem(self, request: CandleRequest) -> str:
-        timeframe = _sanitize_cache_component(request.timeframe)
-        session = _sanitize_cache_component(request.session)
-        exchange = _sanitize_cache_component(request.exchange)
-        symbol = _sanitize_cache_component(request.symbol)
-        adjustment = _sanitize_cache_component(request.adjustment)
+        sanitize = str.maketrans({":": "_"})
+        timeframe = request.timeframe.translate(sanitize)
+        session = request.session.translate(sanitize)
+        exchange = request.exchange.translate(sanitize)
+        symbol = request.symbol.translate(sanitize)
+        adjustment = request.adjustment.translate(sanitize)
         filename = f"{timeframe}-{session}-{exchange}-{symbol}"
-        # Keep non-default adjustments distinct without bloating the common case.
         if adjustment != "splits":
             filename += f"-{adjustment}"
         return filename
 
     def _legacy_path(self, request: CandleRequest) -> Path:
-        exchange = request.exchange.replace(":", "_")
-        symbol = request.symbol.replace(":", "_")
-        timeframe = request.timeframe.replace(":", "_")
-        session = request.session.replace(":", "_")
-        adjustment = request.adjustment.replace(":", "_")
+        sanitize = str.maketrans({":": "_"})
+        exchange = request.exchange.translate(sanitize)
+        symbol = request.symbol.translate(sanitize)
+        timeframe = request.timeframe.translate(sanitize)
+        session = request.session.translate(sanitize)
+        adjustment = request.adjustment.translate(sanitize)
         filename = f"{exchange}_{symbol}_{timeframe}_{session}"
         if adjustment != "splits":
             filename += f"_{adjustment}"
         return self.cache_dir / f"{filename}.csv"
-
-
-def _sanitize_cache_component(value: str) -> str:
-    return value.replace(":", "_")
 
 
 # ------------------------------------------------------------------
@@ -93,13 +89,12 @@ def slice_frame(frame: pd.DataFrame, request: CandleRequest) -> pd.DataFrame:
         result = result[result["time"] >= start]
     if end is not None:
         result = result[result["time"] < end]
-    # Only copy when no filter ran — filter expressions already produce a new DataFrame.
     if result is frame:
         result = frame.copy()
     return result.reset_index(drop=True)
 
 
-def merge_frames(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
-    merged = pd.concat([left, right], ignore_index=True)
-    merged = merged.sort_values("time").drop_duplicates(subset=["time"]).reset_index(drop=True)
-    return merged
+def merge_frames(left: pd.DataFrame | None, right: pd.DataFrame) -> pd.DataFrame:
+    if left is None:
+        return right
+    return pd.concat([left, right]).drop_duplicates(subset=["time"]).sort_values("time").reset_index(drop=True)

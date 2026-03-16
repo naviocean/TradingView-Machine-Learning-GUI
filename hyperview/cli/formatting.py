@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from .._utils import _format_time
 from ..downloader import TradingViewDataClient
+from ..utils import format_time
 from strategy import get_strategy, BaseStrategy
 
 if TYPE_CHECKING:
@@ -71,9 +71,9 @@ def load_candles(
     client = TradingViewDataClient(cache_dir=data_dir)
     candles = client.get_history(candle_request, cache_only=True)
     if not quiet and not compact:
-        print(f"      {len(candles)} candles loaded ({_format_time(time.time() - t0)})")
+        print(f"      {len(candles)} candles loaded ({format_time(time.time() - t0)})")
     if compact:
-        print(f"   \u2022 Data    : {len(candles):,} candles loaded ({_format_time(time.time() - t0)})")
+        print(f"   \u2022 Data    : {len(candles):,} candles loaded ({format_time(time.time() - t0)})")
     return candles
 
 
@@ -104,7 +104,7 @@ def generate_signals(
     buy_count = int(signal_frame["buy_signal"].sum())
     sell_count = int(signal_frame["sell_signal"].sum())
     if not quiet and not compact:
-        print(f"      {buy_count} buy / {sell_count} sell signals ({_format_time(time.time() - t0)})")
+        print(f"      {buy_count} buy / {sell_count} sell signals ({format_time(time.time() - t0)})")
     if compact:
         print(f"   \u2022 Signals : {buy_count} buy / {sell_count} sell{density_suffix}")
     return signal_frame, strategy
@@ -210,6 +210,97 @@ def _arrow(value: float, fmt: str = ".1f", *, pct: bool = True, invert: bool = F
     return formatted
 
 
+def _compute_portfolio_aggregate(
+    all_results: list[tuple[str, str, "BacktestResult"]],
+    all_trades: list,
+    equity_curves: list[list[float]],
+    initial_equity: float,
+) -> dict:
+    """Compute aggregate portfolio metrics from per-pair results."""
+    import math
+    from ..backtest.engine import _annualization_factor
+
+    n = len(all_results)
+
+    # Combined equity curve: sum bar-by-bar, pad shorter curves with last value.
+    max_len = max(len(ec) for ec in equity_curves)
+    combined = [0.0] * max_len
+    for ec in equity_curves:
+        last = ec[-1] if ec else initial_equity
+        for j in range(max_len):
+            combined[j] += ec[j] if j < len(ec) else last
+
+    total_initial = initial_equity * n
+    total_final = sum(r.metrics.equity_final for _, _, r in all_results)
+    port_return = ((total_final - total_initial) / total_initial) * 100.0
+
+    # Max drawdown from combined curve
+    peak = combined[0]
+    max_dd = 0.0
+    for v in combined:
+        if v > peak:
+            peak = v
+        if peak > 0:
+            dd = ((peak - v) / peak) * 100.0
+            if dd > max_dd:
+                max_dd = dd
+
+    # Sharpe from bar returns
+    sharpe = 0.0
+    if len(combined) > 1:
+        returns = [
+            (combined[j] - combined[j - 1]) / combined[j - 1]
+            for j in range(1, len(combined))
+            if combined[j - 1] != 0
+        ]
+        if returns:
+            mean_r = sum(returns) / len(returns)
+            var_r = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+            std_r = math.sqrt(var_r)
+            if std_r > 0:
+                tf = all_results[0][2].metrics.timeframe
+                sharpe = (mean_r / std_r) * _annualization_factor(tf)
+
+    calmar = port_return / max_dd if max_dd > 0 else 0.0
+
+    # Trade statistics from combined pool
+    total_trades = len(all_trades)
+    wins = [t for t in all_trades if t.return_pct >= 0]
+    losses = [t for t in all_trades if t.return_pct < 0]
+    win_rate = (len(wins) / total_trades * 100.0) if total_trades else 0.0
+
+    gross_win = sum(t.return_pct for t in wins)
+    gross_loss = sum(abs(t.return_pct) for t in losses)
+    pf = (gross_win / gross_loss) if gross_loss > 0 else (float("inf") if gross_win > 0 else 0.0)
+    total_return_sum = sum(t.return_pct for t in all_trades)
+    exp = (total_return_sum / total_trades) if total_trades else 0.0
+    avg_w = (gross_win / len(wins)) if wins else 0.0
+    avg_l = (-gross_loss / len(losses)) if losses else 0.0
+    worst = min((t.return_pct for t in all_trades), default=0.0)
+    mcl = max(r.metrics.max_consec_losses for _, _, r in all_results)
+
+    # Exit breakdown
+    total_sl = sum(round(r.metrics.sl_exit_pct / 100 * r.metrics.trade_count) for _, _, r in all_results)
+    total_tp = sum(round(r.metrics.tp_exit_pct / 100 * r.metrics.trade_count) for _, _, r in all_results)
+    total_sig = total_trades - total_sl - total_tp
+    if total_trades > 0:
+        sl_p, tp_p, sig_p = (
+            total_sl / total_trades * 100,
+            total_tp / total_trades * 100,
+            total_sig / total_trades * 100,
+        )
+    else:
+        sl_p = tp_p = sig_p = 0.0
+
+    return {
+        "return": port_return, "max_dd": max_dd, "sharpe": sharpe,
+        "calmar": calmar, "win_rate": win_rate, "pf": pf, "exp": exp,
+        "avg_w": avg_w, "avg_l": avg_l, "worst": worst, "mcl": mcl,
+        "trades": total_trades, "sl_tp_sig": f"{sl_p:.0f}/{tp_p:.0f}/{sig_p:.0f}",
+        "final": total_final,
+    }
+
+
 def print_summary_table(
     all_results: list[tuple[str, str, "BacktestResult"]],
     *,
@@ -219,7 +310,6 @@ def print_summary_table(
     """Print a rich-formatted summary table with a true PORTFOLIO aggregate row."""
     from ..models import BacktestResult  # noqa: lazy import
 
-    import math
     import rich.box
     from rich.console import Console
     from rich.table import Table
@@ -319,95 +409,12 @@ def print_summary_table(
     n = len(all_results)
     if n > 1:
         table.add_section()
-
-        # Combined equity curve: sum bar-by-bar equity across all pairs.
-        # Curves may differ in length; pad shorter ones with their last value.
-        max_len = max(len(ec) for ec in all_equity_curves)
-        combined_curve = [0.0] * max_len
-        for ec in all_equity_curves:
-            last = ec[-1] if ec else initial_equity
-            for j in range(max_len):
-                combined_curve[j] += ec[j] if j < len(ec) else last
-
-        total_initial = initial_equity * n
-        total_final = sum(r.metrics.equity_final for _, _, r in all_results)
-
-        # Return %: true portfolio return
-        port_return = ((total_final - total_initial) / total_initial) * 100.0
-
-        # Max DD % from combined equity curve
-        peak = combined_curve[0]
-        port_max_dd = 0.0
-        for v in combined_curve:
-            if v > peak:
-                peak = v
-            if peak > 0:
-                dd = ((peak - v) / peak) * 100.0
-                if dd > port_max_dd:
-                    port_max_dd = dd
-
-        # Sharpe from combined equity curve bar returns
-        port_sharpe = 0.0
-        if len(combined_curve) > 1:
-            returns = []
-            for j in range(1, len(combined_curve)):
-                prev = combined_curve[j - 1]
-                if prev != 0:
-                    returns.append((combined_curve[j] - prev) / prev)
-            if returns:
-                mean_r = sum(returns) / len(returns)
-                var_r = sum((r - mean_r) ** 2 for r in returns) / len(returns)
-                std_r = math.sqrt(var_r)
-                if std_r > 0:
-                    # Use the timeframe from the first result for annualisation
-                    from ..backtest.engine import _annualization_factor
-                    tf = all_results[0][2].metrics.timeframe
-                    port_sharpe = (mean_r / std_r) * _annualization_factor(tf)
-
-        # Calmar from combined equity curve
-        port_calmar = port_return / port_max_dd if port_max_dd > 0 else 0.0
-
-        # Win rate, PF, expectancy, avg W/L from combined trade pool
-        total_trades = len(all_trades_combined)
-        port_wins = [t for t in all_trades_combined if t.return_pct >= 0]
-        port_losses = [t for t in all_trades_combined if t.return_pct < 0]
-
-        port_win_rate = (len(port_wins) / total_trades * 100.0) if total_trades else 0.0
-
-        gross_win = sum(t.return_pct for t in port_wins)
-        gross_loss = sum(abs(t.return_pct) for t in port_losses)
-        port_pf = (gross_win / gross_loss) if gross_loss > 0 else (float("inf") if gross_win > 0 else 0.0)
-
-        # Expectancy: total combined return % / total combined trades
-        total_return_sum = sum(t.return_pct for t in all_trades_combined)
-        port_exp = (total_return_sum / total_trades) if total_trades else 0.0
-
-        port_avg_w = (gross_win / len(port_wins)) if port_wins else 0.0
-        port_avg_l = (-gross_loss / len(port_losses)) if port_losses else 0.0
-
-        # Worst trade: MIN across all pairs
-        port_worst = min((t.return_pct for t in all_trades_combined), default=0.0)
-
-        # Loss streak: MAX across all pairs
-        port_mcl = max(r.metrics.max_consec_losses for _, _, r in all_results)
-
-        # Exit breakdown: SUM counts then recalculate percentages
-        total_sl = sum(round(r.metrics.sl_exit_pct / 100 * r.metrics.trade_count) for _, _, r in all_results)
-        total_tp = sum(round(r.metrics.tp_exit_pct / 100 * r.metrics.trade_count) for _, _, r in all_results)
-        total_sig = total_trades - total_sl - total_tp
-        if total_trades > 0:
-            sl_p = total_sl / total_trades * 100
-            tp_p = total_tp / total_trades * 100
-            sig_p = total_sig / total_trades * 100
-        else:
-            sl_p = tp_p = sig_p = 0.0
-        port_sl_tp_sig = f"{sl_p:.0f}/{tp_p:.0f}/{sig_p:.0f}"
-
+        p = _compute_portfolio_aggregate(all_results, all_trades_combined, all_equity_curves, initial_equity)
         table.add_row(*_row(
-            "*", "PORTFOLIO", port_return, port_max_dd,
-            port_sharpe, port_calmar, port_win_rate, port_pf,
-            port_exp, port_avg_w, port_avg_l, port_worst,
-            port_mcl, total_trades, port_sl_tp_sig, total_final,
+            "*", "PORTFOLIO", p["return"], p["max_dd"],
+            p["sharpe"], p["calmar"], p["win_rate"], p["pf"],
+            p["exp"], p["avg_w"], p["avg_l"], p["worst"],
+            p["mcl"], p["trades"], p["sl_tp_sig"], p["final"],
             is_portfolio=True,
         ))
 

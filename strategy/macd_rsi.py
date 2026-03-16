@@ -4,9 +4,9 @@ from typing import Any
 
 import pandas as pd
 
-from ._lib.base import BaseStrategy
+from .base import BaseStrategy
 from . import register_strategy
-from ._lib.indicators import barssince, crossed_above, crossed_below, macd, rsi
+from .indicators import barssince, crossed_above, crossed_below, macd, rsi
 
 
 @register_strategy

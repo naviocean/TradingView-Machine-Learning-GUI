@@ -7,24 +7,19 @@ from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
 
-from ..models import BacktestMetrics, CandleRequest, OptimizationRequest
+from ..models import CandleRequest, OptimizationRequest
 from ..presets import save_best_preset, strategy_preset_path
-from ._helpers import _resolve, generate_signals, load_candles, print_hyperopt_table, resolve_pairlist
+from .formatting import _resolve, generate_signals, load_candles, print_hyperopt_table, resolve_pairlist
 from strategy import list_strategies
 
 from ..hyperopt import run_optimization
 
-
-def _signal_density_suffix(total_signals: int, in_range_bars: int) -> str:
-    """Return a density label like 'High density (86.98/1k bars)'."""
-    density_per_1k = (total_signals / max(in_range_bars, 1)) * 1000
-    if density_per_1k < 5:
-        label = "Low"
-    elif density_per_1k < 20:
-        label = "Medium"
-    else:
-        label = "High"
-    return f"{label} density ({density_per_1k:.2f}/1k bars)"
+_PRESET_METRIC_KEYS = frozenset({
+    "net_profit_pct", "max_drawdown_pct", "win_rate_pct", "profit_factor",
+    "trade_count", "equity_final", "sharpe_ratio", "calmar_ratio",
+    "expectancy_pct", "avg_win_pct", "avg_loss_pct", "worst_trade_pct",
+    "max_consec_losses", "sl_exit_pct", "tp_exit_pct", "signal_exit_pct",
+})
 
 
 def _run_single_hyperopt(
@@ -46,7 +41,6 @@ def _run_single_hyperopt(
     tp_max: float,
     objective: str,
     top_n: int,
-    search_method: str,
     n_trials: int,
 ) -> tuple[int, tuple[float, float] | None]:
     candle_request = CandleRequest(
@@ -80,8 +74,9 @@ def _run_single_hyperopt(
         buy_count = int(signal_frame["buy_signal"].sum())
         sell_count = int(signal_frame["sell_signal"].sum())
         in_range_bars = int(signal_frame["in_date_range"].sum())
-        density = _signal_density_suffix(buy_count + sell_count, in_range_bars)
-        print(f"   \u2022 Signals : {buy_count} buy / {sell_count} sell ({density})")
+        density_per_1k = (buy_count + sell_count) / max(in_range_bars, 1) * 1000
+        density_label = "Low" if density_per_1k < 5 else "Medium" if density_per_1k < 20 else "High"
+        print(f"   \u2022 Signals : {buy_count} buy / {sell_count} sell ({density_label} density ({density_per_1k:.2f}/1k bars))")
         request = OptimizationRequest(
             candle_request=candle_request,
             mode=mode,
@@ -91,7 +86,6 @@ def _run_single_hyperopt(
             tp_min=tp_min,
             tp_max=tp_max,
             top_n=top_n,
-            search_method=search_method,
             n_trials=n_trials,
             initial_equity=initial_capital,
         )
@@ -112,11 +106,11 @@ def _run_single_hyperopt(
             return 1, None
 
         best = bundle.results[0]
-        preset_path = _save_best_result_to_presets(
-            output_dir_base=output_dir_base,
-            exchange=exchange,
-            symbol=symbol,
-            strategy_name=strategy_name,
+        metrics = {k: v for k, v in best.to_dict().items() if k in _PRESET_METRIC_KEYS}
+        preset_path = save_best_preset(
+            strategy_preset_path(output_dir_base, strategy_name),
+            strategy=strategy_name,
+            pair=f"{exchange}:{symbol}",
             timeframe=timeframe,
             session=session_type,
             adjustment=adjustment,
@@ -124,8 +118,8 @@ def _run_single_hyperopt(
             sl=best.sl_pct,
             tp=best.tp_pct,
             objective=objective,
-            search_method=search_method,
-            best_metrics=best,
+            search_method="bayesian",
+            metrics=metrics,
         )
         Console().print(f"   [green]✔[/green] Best preset saved to: {preset_path}")
         return 0, (best.sl_pct, best.tp_pct)
@@ -166,7 +160,6 @@ def run_hyperopt(args: argparse.Namespace, config: dict) -> int:
 
     objective = args.objective or opt_cfg.get("objective", "net_profit_pct")
     top_n = args.top_n if args.top_n is not None else opt_cfg.get("top_n", 5)
-    search_method = args.search_method or opt_cfg.get("search_method", "grid")
     n_trials = args.n_trials if args.n_trials is not None else opt_cfg.get("n_trials", 100)
 
     symbols = resolve_pairlist(args, config)
@@ -209,7 +202,6 @@ def run_hyperopt(args: argparse.Namespace, config: dict) -> int:
             tp_max=tp_max,
             objective=objective,
             top_n=top_n,
-            search_method=search_method,
             n_trials=n_trials,
         )
         if pair_rc != 0:
@@ -217,57 +209,3 @@ def run_hyperopt(args: argparse.Namespace, config: dict) -> int:
             continue
 
     return rc
-
-
-def _extract_metrics(best: BacktestMetrics) -> dict[str, object]:
-    return {
-        "net_profit_pct": round(best.net_profit_pct, 2),
-        "max_drawdown_pct": round(best.max_drawdown_pct, 2),
-        "win_rate_pct": round(best.win_rate_pct, 2),
-        "profit_factor": round(best.profit_factor, 2),
-        "trade_count": best.trade_count,
-        "equity_final": round(best.equity_final, 2),
-        "sharpe_ratio": round(best.sharpe_ratio, 2),
-        "calmar_ratio": round(best.calmar_ratio, 2),
-        "expectancy_pct": round(best.expectancy_pct, 2),
-        "avg_win_pct": round(best.avg_win_pct, 2),
-        "avg_loss_pct": round(best.avg_loss_pct, 2),
-        "worst_trade_pct": round(best.worst_trade_pct, 2),
-        "max_consec_losses": best.max_consec_losses,
-        "sl_exit_pct": round(best.sl_exit_pct, 2),
-        "tp_exit_pct": round(best.tp_exit_pct, 2),
-        "signal_exit_pct": round(best.signal_exit_pct, 2),
-    }
-
-
-def _save_best_result_to_presets(
-    *,
-    output_dir_base: str,
-    exchange: str,
-    symbol: str,
-    strategy_name: str,
-    timeframe: str,
-    session: str,
-    adjustment: str,
-    mode: str,
-    sl: float,
-    tp: float,
-    objective: str,
-    search_method: str,
-    best_metrics: BacktestMetrics,
-) -> Path:
-    preset_path = strategy_preset_path(output_dir_base, strategy_name)
-    return save_best_preset(
-        preset_path,
-        strategy=strategy_name,
-        pair=f"{exchange}:{symbol}",
-        timeframe=timeframe,
-        session=session,
-        adjustment=adjustment,
-        mode=mode,
-        sl=sl,
-        tp=tp,
-        objective=objective,
-        search_method=search_method,
-        metrics=_extract_metrics(best_metrics),
-    )

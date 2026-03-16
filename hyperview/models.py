@@ -17,7 +17,6 @@ Objective = Literal[
     "max_drawdown_pct",
     "trade_count",
 ]
-SearchMethod = Literal["grid", "bayesian"]
 
 
 # ---------------------------------------------------------------------------
@@ -43,6 +42,17 @@ class RiskParameters:
     short_stoploss_pct: float
     short_takeprofit_pct: float
 
+    @classmethod
+    def from_mode(cls, mode: Mode, sl_value: float, tp_value: float) -> RiskParameters:
+        """Construct RiskParameters based on trade mode and SL/TP percentages."""
+        is_short = mode == "short"
+        return cls(
+            long_stoploss_pct=0.0 if is_short else sl_value,
+            long_takeprofit_pct=0.0 if is_short else tp_value,
+            short_stoploss_pct=sl_value,
+            short_takeprofit_pct=tp_value,
+        )
+
 
 @dataclass(frozen=True)
 class OptimizationRequest:
@@ -55,7 +65,6 @@ class OptimizationRequest:
     tp_max: float
     top_n: int = 10
     initial_equity: float = 100_000.0
-    search_method: SearchMethod = "grid"
     n_trials: int = 200
 
 
@@ -106,6 +115,10 @@ class BacktestMetrics:
     signal_exit_pct: float = 0.0
     rank: int | None = None
 
+    def objective_value(self, objective: Objective) -> float:
+        """Return the sortable metric value for the given objective."""
+        return float(getattr(self, objective))
+
     def to_dict(self) -> dict[str, Any]:
         return _rounded_metrics_dict(self)
 
@@ -127,7 +140,6 @@ class BacktestResult:
 class OptimizationBundle:
     request: OptimizationRequest
     results: list[BacktestMetrics]
-    coarse_results: list[BacktestMetrics]
     output_path: Path
 
     def to_dict(self) -> dict[str, Any]:
@@ -142,11 +154,9 @@ class OptimizationBundle:
                 "tp_max": self.request.tp_max,
                 "top_n": self.request.top_n,
                 "initial_equity": self.request.initial_equity,
-                "search_method": self.request.search_method,
                 "n_trials": self.request.n_trials,
             },
             "results": [result.to_dict() for result in self.results],
-            "coarse_results": [result.to_dict() for result in self.coarse_results],
         }
 
 
@@ -160,6 +170,12 @@ class MultiPairCandidate:
     aggregate_objective: float
     per_pair_metrics: list[BacktestMetrics]
     rank: int | None = None
+
+    def objective_value(self, objective: Objective) -> float:
+        """Return the sortable metric value for the given objective."""
+        if objective == "max_drawdown_pct":
+            return self.aggregate_max_drawdown_pct
+        return self.aggregate_objective
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -179,7 +195,6 @@ class MultiPairOptimizationBundle:
     request: OptimizationRequest
     pairs: list[tuple[str, str]]  # (symbol, exchange) tuples
     results: list[MultiPairCandidate]
-    coarse_results: list[MultiPairCandidate]
     output_path: Path
 
     def to_dict(self) -> dict[str, Any]:
@@ -198,11 +213,9 @@ class MultiPairOptimizationBundle:
                 "tp_max": self.request.tp_max,
                 "top_n": self.request.top_n,
                 "initial_equity": self.request.initial_equity,
-                "search_method": self.request.search_method,
                 "n_trials": self.request.n_trials,
             },
             "results": [c.to_dict() for c in self.results],
-            "coarse_results": [c.to_dict() for c in self.coarse_results],
         }
 
 

@@ -1,17 +1,55 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import re
+import secrets
 from typing import Any
 
 import pandas as pd
 
-from ...models import CandleRequest
-from .constants import DEFAULT_USER_AGENT, WS_URL
+from ..models import CandleRequest
 from .credentials import TradingViewCredentials, resolve_credentials
-from .protocol import cookie_header_value, encode_message, encode_raw, generate_session, split_payloads
-from .timeframes import backfill_chunk_size, estimate_bar_count, max_backfill_requests, normalize_interval, to_timestamp
+from .timeframes import (
+    DEFAULT_USER_AGENT,
+    WS_URL,
+    backfill_chunk_size,
+    estimate_bar_count,
+    max_backfill_requests,
+    normalize_interval,
+    to_timestamp,
+)
 
+# ---------------------------------------------------------------------------
+# Wire-protocol helpers (TradingView custom WebSocket framing)
+# ---------------------------------------------------------------------------
+
+_PAYLOAD_SPLIT_RE = re.compile(r"~m~\d+~m~")
+
+
+def _split_payloads(raw_message: str) -> list[str]:
+    return [m for m in _PAYLOAD_SPLIT_RE.split(raw_message) if m]
+
+
+def _encode_message(function: str, parameters: list[Any]) -> str:
+    payload = json.dumps({"m": function, "p": parameters}, separators=(",", ":"))
+    return f"~m~{len(payload)}~m~{payload}"
+
+
+def _encode_raw(payload: str) -> str:
+    return f"~m~{len(payload)}~m~{payload}"
+
+
+def _generate_session(prefix: str) -> str:
+    return f"{prefix}_{secrets.token_hex(6)}"
+
+
+def _cookie_header_value(cookies: dict[str, str]) -> str:
+    return "; ".join(f"{name}={value}" for name, value in sorted(cookies.items()))
+
+
+# ---------------------------------------------------------------------------
+# Chart session
+# ---------------------------------------------------------------------------
 
 class ChartSession:
     """Manages a single TradingView WebSocket chart-session download."""
@@ -19,7 +57,7 @@ class ChartSession:
     def __init__(self, request: CandleRequest) -> None:
         self._request = request
 
-    def download(self) -> tuple[pd.DataFrame, dict[str, Any]]:
+    def download(self) -> pd.DataFrame:
         try:
             import websocket  # type: ignore
         except ImportError as error:
@@ -52,10 +90,10 @@ class ChartSession:
         credentials: TradingViewCredentials,
         interval: str,
         bars_to_request: int,
-    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+    ) -> pd.DataFrame:
         self._handle_initial_heartbeat(ws)
-        chart_session = generate_session("cs")
-        quote_session = generate_session("qs")
+        chart_session = _generate_session("cs")
+        quote_session = _generate_session("qs")
         symbol = f"{self._request.exchange}:{self._request.symbol}"
         resolved_symbol = json.dumps(
             {
@@ -67,7 +105,7 @@ class ChartSession:
         )
 
         self._setup_sessions(ws, credentials, chart_session, quote_session, symbol, resolved_symbol, interval, bars_to_request)
-        return self._receive_loop(ws, credentials, chart_session)
+        return self._receive_loop(ws, chart_session)
 
     def _setup_sessions(
         self,
@@ -103,18 +141,17 @@ class ChartSession:
     def _receive_loop(
         self,
         ws: Any,
-        credentials: TradingViewCredentials,
         chart_session: str,
-    ) -> tuple[pd.DataFrame, dict[str, Any]]:
+    ) -> pd.DataFrame:
         payloads: list[dict[str, Any]] = []
         backfill_count = 0
         previous_oldest_time: int | None = None
 
         while True:
             raw = ws.recv()
-            for payload in split_payloads(raw):
+            for payload in _split_payloads(raw):
                 if payload.isdigit():
-                    ws.send(encode_raw(payload))
+                    ws.send(_encode_raw(payload))
                     continue
                 try:
                     message = json.loads(payload)
@@ -126,7 +163,6 @@ class ChartSession:
                     continue
 
                 dataframe = _extract_dataframe(payloads)
-                metadata = _extract_history_metadata(payloads, self._request, credentials, backfill_count)
 
                 if dataframe.empty:
                     ws.close()
@@ -147,7 +183,7 @@ class ChartSession:
                     continue
 
                 ws.close()
-                return dataframe, metadata
+                return dataframe
 
     # ------------------------------------------------------------------
     # Transport helpers
@@ -159,7 +195,7 @@ class ChartSession:
             "Origin: https://www.tradingview.com",
             f"User-Agent: {DEFAULT_USER_AGENT}",
         ]
-        header_cookies = cookie_header_value(credentials.cookies)
+        header_cookies = _cookie_header_value(credentials.cookies)
         if header_cookies:
             headers.append(f"Cookie: {header_cookies}")
         elif credentials.session_id:
@@ -168,14 +204,14 @@ class ChartSession:
 
     @staticmethod
     def _send(ws: Any, function: str, parameters: list[Any]) -> None:
-        ws.send(encode_message(function, parameters))
+        ws.send(_encode_message(function, parameters))
 
     @staticmethod
     def _handle_initial_heartbeat(ws: Any) -> None:
         raw = ws.recv()
-        for payload in split_payloads(raw):
+        for payload in _split_payloads(raw):
             if payload.isdigit():
-                ws.send(encode_raw(payload))
+                ws.send(_encode_raw(payload))
 
 
 # ======================================================================
@@ -198,7 +234,6 @@ def _extract_dataframe(payloads: list[dict[str, Any]]) -> pd.DataFrame:
 
     frame = pd.DataFrame(bars)
     columns = ["time", "open", "high", "low", "close", "volume"]
-    # Pad missing columns with NaN if TradingView returned fewer fields.
     frame = frame.reindex(columns=range(len(columns)))
     frame.columns = columns
     frame = frame.dropna(subset=["time", "open", "high", "low", "close"])
@@ -208,46 +243,6 @@ def _extract_dataframe(payloads: list[dict[str, Any]]) -> pd.DataFrame:
     frame["volume"] = pd.to_numeric(frame["volume"], errors="coerce")
     frame = frame.sort_values("time").drop_duplicates(subset=["time"]).reset_index(drop=True)
     return frame
-
-
-def _extract_history_metadata(
-    payloads: list[dict[str, Any]],
-    request: CandleRequest,
-    credentials: TradingViewCredentials,
-    backfill_requests: int,
-) -> dict[str, Any]:
-    requested_symbol = f"{request.exchange}:{request.symbol}"
-    symbol_data: dict[str, Any] = {}
-    for payload in payloads:
-        if payload.get("m") != "symbol_resolved":
-            continue
-        parameters = payload.get("p")
-        if not isinstance(parameters, list) or len(parameters) < 3 or not isinstance(parameters[2], dict):
-            continue
-        symbol_data = parameters[2]
-        break
-
-    resolved_full_name = symbol_data.get("full_name")
-    resolved_pro_name = symbol_data.get("pro_name")
-    return {
-        "source": "tradingview-websocket",
-        "requested_symbol": requested_symbol,
-        "resolved_full_name": resolved_full_name,
-        "resolved_pro_name": resolved_pro_name,
-        "exchange": symbol_data.get("exchange"),
-        "description": symbol_data.get("description"),
-        "type": symbol_data.get("type"),
-        "session": symbol_data.get("session"),
-        "source_id": symbol_data.get("source_id"),
-        "provider_id": symbol_data.get("provider_id"),
-        "pricescale": symbol_data.get("pricescale"),
-        "has_session_id": credentials.session_id is not None,
-        "has_auth_token": credentials.auth_token != "unauthorized_user_token",
-        "credentials_source": credentials.source,
-        "full_name_mismatch": resolved_full_name not in {None, requested_symbol},
-        "pro_name_mismatch": resolved_pro_name not in {None, requested_symbol},
-        "backfill_requests": backfill_requests,
-    }
 
 
 def _find_series_points(payload: Any) -> list[dict[str, Any]]:

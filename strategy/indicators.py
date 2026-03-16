@@ -6,7 +6,7 @@ call ``talib`` directly in your strategy and use :func:`to_numpy` /
 :func:`wrap` for conversion::
 
     import talib
-    from strategy._lib.indicators import to_numpy, wrap
+    from strategy.indicators import to_numpy, wrap
 
     df["cci"] = wrap(talib.CCI(to_numpy(df["high"]),
                                 to_numpy(df["low"]),

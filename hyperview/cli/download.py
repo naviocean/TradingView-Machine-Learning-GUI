@@ -3,9 +3,9 @@ from __future__ import annotations
 import argparse
 import time
 
-from .._utils import _format_time
 from ..downloader import TradingViewDataClient
-from ._helpers import _resolve, resolve_pairlist
+from ..utils import format_time
+from .formatting import _resolve, resolve_pairlist
 
 
 def run_download_data(args: argparse.Namespace, config: dict) -> int:
@@ -38,7 +38,7 @@ def run_download_data(args: argparse.Namespace, config: dict) -> int:
             adjustment=adjustment,
         )
         total_downloads += len(results)
-    print(f"\nDone - {total_downloads} dataset(s) downloaded ({_format_time(time.time() - t0)})")
+    print(f"\nDone - {total_downloads} dataset(s) downloaded ({format_time(time.time() - t0)})")
     return 0
 
 

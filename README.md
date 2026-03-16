@@ -4,7 +4,7 @@
 
 HyperView is for the moment a TradingView strategy stops being a chart experiment and starts needing hard evidence. It pulls historical candles straight from TradingView's websocket, runs your strategy logic in Python, and backtests with fill behavior designed to closely mirror Pine Script, so the results you tune locally in python still match the results you'll see on TradingView's strategy tester.
 
-Instead of bouncing between Pine scripts, CSV exports, and improvised notebooks, HyperView gives you one clean loop: pull up to 40K bars, build on [TA-Lib](https://github.com/TA-Lib/ta-lib-python)'s 150+ indicators, simulate realistic SL/TP execution, and let Bayesian optimization hunt for better parameter ranges. No API keys. No browser automation. No spreadsheet cleanup. Just faster iteration, sharper validation, and a workflow built for traders who want to develop strategies like engineers.
+Instead of bouncing between Pine scripts, CSV exports, and improvised notebooks, HyperView gives you one clean loop: pull up to 40K bars, build on [TA-Lib](https://github.com/TA-Lib/ta-lib-python)'s 150+ indicators, simulate realistic SL/TP execution, and let Bayesian optimization (Optuna TPE) hunt for better parameter ranges. No API keys. No browser automation. No spreadsheet cleanup. Just faster iteration, sharper validation, and a workflow built for traders who want to develop strategies like engineers.
 
 ## Prerequisites
 
@@ -23,71 +23,92 @@ pip install -e .
 hyperview download-data --pairs NASDAQ:NFLX NASDAQ:AAPL --timeframe 1h --session extended
 
 # Or define your pairs in config.json and download multiple timeframes at once:
-hyperview download-data --timeframe 1h 15m --session regular
+hyperview download-data --timeframe 1h 15m
 
 # Run a single backtest (uses config pairlist)
 hyperview backtest --sl 3.23 --tp 13.06 --mode long
 
 # Or target a specific symbol using values from a hyperopt preset file
-hyperview backtest --symbol NASDAQ:NFLX --preset-file results/adx_stochastic_presets.json --start 2023-01-03
+hyperview backtest --symbol NASDAQ:NFLX --preset-file results/adx_stochastic_presets.json
 
 # Hyper-optimize SL/TP across all pairs in config
-hyperview hyperopt --mode long --start 2023-01-03
+hyperview hyperopt --mode long
 
 # List cached data and registered strategies
 hyperview list-data
 hyperview list-strategies
 ```
 
-You can also run via `python -m _engine` instead of `hyperview`.
+You can also run via `python -m hyperview` instead of the `hyperview` command.
 
-Python bytecode is redirected into the project-level `.pycache/` directory, so runtime imports do not create scattered `__pycache__` folders under `_engine/` or `strategy/`.
+Python bytecode is redirected into the project-level `.pycache/` directory, so runtime imports do not create scattered `__pycache__` folders under `hyperview/` or `strategy/`.
 
 ## How It Works
 
 1. **Download** — Connects to TradingView's websocket using your existing Firefox session cookies. Supports up to 40K historical bars on paid plans with automatic backfill.
 2. **Signal** — Runs a pluggable strategy (e.g. the included MACD+RSI or ADX+Stochastic) in pure Python with TA-Lib indicator parity.
 3. **Backtest** — Simulates trades bar-by-bar using TradingView-parity fill assumptions (next-bar-open entry, intrabar SL/TP exit ordering). Multi-pair runs produce a true **PORTFOLIO** aggregate row with combined equity-curve statistics.
-4. **Hyper-Optimize** — Runs coarse+fine grid search or Bayesian TPE across SL/TP combinations, then updates a strategy preset file with the best result for each pair/context.
+4. **Hyper-Optimize** — Runs Bayesian optimization (Optuna TPE) across SL/TP combinations, then updates a strategy preset file with the best result for each pair/context.
 
 ## Terminal Output
 
 Both the backtest and hyperopt commands produce styled terminal output using [rich](https://github.com/Textualize/rich):
 
-- **Backtest summary** — A bordered table with colored directional arrows (▲ green for gains, ▼ red for losses) on Return, Max DD, Expectancy, and Worst Trade. When multiple pairs are run, a **PORTFOLIO** row is appended with mathematically correct aggregate statistics computed from a combined equity curve (not simple averages).
+- **Backtest summary** — A bordered table with colored directional arrows (▲ green for gains, ▼ red for losses) on Return, Drawdown, Expectancy, and Worst Trade, using readable short labels that fit a normal terminal width. When multiple pairs are run, a **PORTFOLIO** row is appended with mathematically correct aggregate statistics computed from a combined equity curve (not simple averages).
 - **Hyperopt results** — A panel header showing strategy/mode/timeframe, bullet-point data and signal summaries per pair, and a top-N results table with cyan-highlighted parameter columns (SL/TP) visually separated from metric columns.
 
 ## Repository Layout
 
 ```
-pyproject.toml                    Package metadata & `hyperview` CLI entry point
-config.json                       Default configuration (timeframe, pairlist, opt ranges)
-data/                             Cached candle data (`timeframe-session-exchange-pair.csv`, auto-generated)
-results/                          Optimization & backtest results (auto-generated)
-strategy/                         Pluggable strategy framework (user-facing)
-├── __init__.py                   Plugin registry & auto-discovery
-├── macd_rsi.py                   MACD+RSI strategy (registered as "macd_rsi")
-├── adx_stochastic.py             ADX+Stochastic strategy (registered as "adx_stochastic")
-└── _lib/                         Shared strategy library
-    ├── base.py                   BaseStrategy ABC & prepare_candles()
-    └── indicators.py             TA-Lib wrappers, conversion helpers & signal toolkit
-_engine/                          Internal processing logic
-├── __main__.py                   Module entry point (python -m _engine)
-├── cli/                          CLI router & subcommand handlers
-│   ├── _helpers.py               Shared formatting helpers (rich tables, arrow decorators)
-│   ├── backtest.py               backtest command
-│   ├── download.py               download-data command
-│   ├── hyperopt.py               hyperopt command
-│   └── list.py                   list-data & list-strategies commands
-├── config.py                     Config loader (JSON merged with CLI overrides)
-├── models.py                     Shared dataclasses (CandleRequest, Trade, BacktestMetrics, …)
+pyproject.toml              Package metadata & CLI entry point
+config.json                 Default configuration (timeframe, pairlist, opt ranges)
+config.schema.json          JSON Schema for editor validation & autocompletion
+data/                       Cached candle CSVs (auto-generated)
+results/                    Optimization presets & reports (auto-generated)
+```
+
+### `strategy/` — Pluggable Strategy Framework
+
+```
+strategy/
+├── __init__.py             Plugin registry & auto-discovery
+├── base.py                 BaseStrategy ABC & prepare_candles()
+├── indicators.py           TA-Lib wrappers, conversion helpers & signal toolkit
+├── adx_stochastic.py       ADX+Stochastic strategy
+└── macd_rsi.py             MACD+RSI strategy
+```
+
+### `hyperview/` — Core Engine
+
+```
+hyperview/
+├── __main__.py             Module entry point (python -m hyperview)
+├── config.py               Config loader (JSON + CLI overrides + env vars)
+├── models.py               Shared dataclasses (CandleRequest, Trade, BacktestMetrics, …)
+├── presets.py              Preset load/save for optimized SL/TP parameters
+├── validators.py           Configuration & preset validation rules
+├── runtime.py              Bytecode cache redirection
+│
+├── cli/                    CLI router & subcommand handlers
+│   ├── __init__.py         Argument parser & main() dispatcher
+│   ├── formatting.py       Shared formatting helpers (rich tables, arrow decorators)
+│   ├── backtest.py         backtest command
+│   ├── download.py         download-data command
+│   ├── hyperopt.py         hyperopt command
+│   └── list.py             list-data & list-strategies commands
+│
 ├── backtest/
-│   └── engine.py                 TradingView-parity OHLC simulator
+│   └── engine.py           TradingView-parity OHLC simulator
+│
 ├── downloader/
-│   ├── client.py                 TradingView websocket downloader & multi-pair support
-│   └── _tv/                      WebSocket internals (session, protocol, cache, credentials)
+│   ├── client.py           TradingView websocket downloader & cache orchestration
+│   ├── cache.py            CSV-backed local candle cache
+│   ├── credentials.py      Firefox credential extraction
+│   ├── session.py          WebSocket chart session manager
+│   └── timeframes.py       Timeframe constants & utilities
+│
 └── hyperopt/
-    └── optimizer.py              Grid search + Bayesian (Optuna TPE)
+    └── optimizer.py        Bayesian optimizer (Optuna TPE)
 ```
 
 ## Configuration
@@ -112,7 +133,6 @@ The sample below shows a customized setup; if a key is omitted, HyperView falls 
         "COINBASE:ETHUSD"
     ],
     "optimization": {
-        "search_method": "grid",
         "n_trials": 200,
         "objective": "net_profit_pct",
         "top_n": 10,
@@ -192,10 +212,10 @@ If `--sl` and `--tp` are omitted, HyperView looks for a matching entry in the pr
 
 ```bash
 # Optimize all pairs from config pairlist (runs one optimization per pair)
-hyperview hyperopt --search-method bayesian --n-trials 300
+hyperview hyperopt --n-trials 300
 
 # Or target a specific symbol
-hyperview hyperopt --symbol NASDAQ:NFLX --search-method bayesian --n-trials 300
+hyperview hyperopt --symbol NASDAQ:NFLX --n-trials 300
 ```
 
 | Flag | Required | Default | Description |
@@ -203,8 +223,7 @@ hyperview hyperopt --symbol NASDAQ:NFLX --search-method bayesian --n-trials 300
 | `--symbol` | No | config pairlist | `EXCHANGE:SYMBOL` pair (overrides pairlist) |
 | `--sl-min`, `--sl-max` | No | config | Stop-loss % search range |
 | `--tp-min`, `--tp-max` | No | config | Take-profit % search range |
-| `--search-method` | No | config | `grid` or `bayesian` |
-| `--n-trials` | No | config | Bayesian trial count |
+| `--n-trials` | No | config | Number of Bayesian optimization trials (default: 200) |
 | `--objective` | No | config | `net_profit_pct` `profit_factor` `win_rate_pct` `max_drawdown_pct` `trade_count` |
 | `--top-n` | No | config | Number of top candidates to keep |
 | `--strategy`, `--mode`, `--timeframe`, `--adjustment`, etc. | No | config / defaults | Standard filters |
@@ -250,7 +269,7 @@ For any of TA-Lib's 150+ functions not wrapped above, call `talib` directly and 
 
 ```python
 import talib
-from strategy._lib.indicators import to_numpy, wrap
+from strategy.indicators import to_numpy, wrap
 
 df["cci"] = wrap(talib.CCI(to_numpy(df["high"]),
                             to_numpy(df["low"]),
@@ -267,8 +286,8 @@ Strategies are auto-discovered at startup — no manual imports needed.
 
 ```python
 from strategy import register_strategy
-from strategy._lib.base import BaseStrategy
-from strategy._lib.indicators import ema, crossed_above
+from strategy.base import BaseStrategy
+from strategy.indicators import ema, crossed_above
 
 @register_strategy
 class MyStrategy(BaseStrategy):

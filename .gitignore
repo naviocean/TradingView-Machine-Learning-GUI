@@ -20,6 +20,6 @@ Thumbs.db
 desktop.ini
 
 # Runtime data (browser profiles, cached market data, results)
-_engine/browser_profile/
+hyperview/browser_profile/
 data/
 results/

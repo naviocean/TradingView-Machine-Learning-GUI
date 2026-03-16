@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -38,8 +39,7 @@ def _annualization_factor(timeframe: str) -> float:
     return math.sqrt(_BARS_PER_YEAR.get(tf, 365 * 24))  # default to 1h
 
 
-@dataclass
-class _Position:
+class _Position(NamedTuple):
     direction: str
     entry_time: int
     entry_price: float
@@ -48,35 +48,29 @@ class _Position:
     equity_before: float
 
 
-@dataclass
-class _PendingOrder:
+class _PendingOrder(NamedTuple):
     action: str
     signal_close: float
 
 
-@dataclass(frozen=True)
-class _CompiledSignalFrame:
-    time: np.ndarray
-    open: np.ndarray
-    high: np.ndarray
-    low: np.ndarray
-    close: np.ndarray
-    in_date_range: np.ndarray
-    buy_signal: np.ndarray
-    sell_signal: np.ndarray
-    enable_long: np.ndarray
-    enable_short: np.ndarray
+class _CompiledSignalFrame(NamedTuple):
+    time: list[int]
+    open: list[float]
+    high: list[float]
+    low: list[float]
+    close: list[float]
+    in_date_range: list[bool]
+    buy_signal: list[bool]
+    sell_signal: list[bool]
+    enable_long: list[bool]
+    enable_short: list[bool]
     end_date: str | None
-
-    @property
-    def length(self) -> int:
-        return int(self.time.size)
+    length: int
 
 
 @dataclass
 class _MetricsAccumulator:
     initial_equity: float
-    equity_reference: float
     final_closed_equity: float
     positive_pnl: float = 0.0
     negative_pnl: float = 0.0
@@ -103,15 +97,13 @@ class _MetricsAccumulator:
     def create(cls, initial_equity: float) -> _MetricsAccumulator:
         return cls(
             initial_equity=initial_equity,
-            equity_reference=initial_equity,
             final_closed_equity=initial_equity,
             peak_equity=initial_equity,
             prev_curve_value=initial_equity,
         )
 
     def record_trade(self, trade: Trade) -> None:
-        pnl = trade.equity_after - self.equity_reference
-        self.equity_reference = trade.equity_after
+        pnl = trade.equity_after - self.final_closed_equity
         self.final_closed_equity = trade.equity_after
         self.trade_count += 1
         self.total_return_sum += trade.return_pct
@@ -191,24 +183,25 @@ class TradingViewLikeBacktester:
             return signal_frame
 
         dataframe = signal_frame.reset_index(drop=True)
-        close_series = dataframe["close"].round(self._price_decimals)
+        decimals = self._price_decimals
         time_values = dataframe["time"].to_numpy(dtype=np.int64, copy=True)
         end_date = None
         if time_values.size:
             end_date = pd.Timestamp(int(time_values.max()), unit="s", tz="UTC").strftime("%Y-%m-%d")
 
         return _CompiledSignalFrame(
-            time=time_values,
-            open=dataframe["open"].round(self._price_decimals).to_numpy(dtype=np.float64, copy=True),
-            high=dataframe["high"].round(self._price_decimals).to_numpy(dtype=np.float64, copy=True),
-            low=dataframe["low"].round(self._price_decimals).to_numpy(dtype=np.float64, copy=True),
-            close=close_series.to_numpy(dtype=np.float64, copy=True),
-            in_date_range=dataframe["in_date_range"].fillna(False).to_numpy(dtype=bool, copy=True),
-            buy_signal=dataframe["buy_signal"].fillna(False).to_numpy(dtype=bool, copy=True),
-            sell_signal=dataframe["sell_signal"].fillna(False).to_numpy(dtype=bool, copy=True),
-            enable_long=dataframe["enable_long"].fillna(False).to_numpy(dtype=bool, copy=True),
-            enable_short=dataframe["enable_short"].fillna(False).to_numpy(dtype=bool, copy=True),
+            time=time_values.tolist(),
+            open=dataframe["open"].round(decimals).to_numpy(dtype=np.float64).tolist(),
+            high=dataframe["high"].round(decimals).to_numpy(dtype=np.float64).tolist(),
+            low=dataframe["low"].round(decimals).to_numpy(dtype=np.float64).tolist(),
+            close=dataframe["close"].round(decimals).to_numpy(dtype=np.float64).tolist(),
+            in_date_range=dataframe["in_date_range"].fillna(False).tolist(),
+            buy_signal=dataframe["buy_signal"].fillna(False).tolist(),
+            sell_signal=dataframe["sell_signal"].fillna(False).tolist(),
+            enable_long=dataframe["enable_long"].fillna(False).tolist(),
+            enable_short=dataframe["enable_short"].fillna(False).tolist(),
             end_date=end_date,
+            length=int(time_values.size),
         )
 
     def _simulate(
@@ -226,18 +219,18 @@ class TradingViewLikeBacktester:
         equity_curve: list[float] = [equity] if include_details else []
         trades: list[Trade] = [] if include_details else []
 
-        # Pre-convert arrays to Python lists once: avoids per-bar numpy scalar overhead
+        # Signal frame already holds Python lists — use directly.
         length = signal_frame.length
-        times = signal_frame.time.tolist()
-        opens = signal_frame.open.tolist()
-        highs = signal_frame.high.tolist()
-        lows = signal_frame.low.tolist()
-        closes = signal_frame.close.tolist()
-        in_date_range_list = signal_frame.in_date_range.tolist()
-        buy_signals = signal_frame.buy_signal.tolist()
-        sell_signals = signal_frame.sell_signal.tolist()
-        enable_longs = signal_frame.enable_long.tolist()
-        enable_shorts = signal_frame.enable_short.tolist()
+        times = signal_frame.time
+        opens = signal_frame.open
+        highs = signal_frame.high
+        lows = signal_frame.low
+        closes = signal_frame.close
+        in_date_range_list = signal_frame.in_date_range
+        buy_signals = signal_frame.buy_signal
+        sell_signals = signal_frame.sell_signal
+        enable_longs = signal_frame.enable_long
+        enable_shorts = signal_frame.enable_short
         last_index = length - 1
 
         for index in range(length):

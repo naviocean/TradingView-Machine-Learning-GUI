@@ -17,7 +17,6 @@
         "COINBASE:ETHUSD"
     ],
     "optimization": {
-        "search_method": "bayesian",
         "n_trials": 150,
         "objective": "net_profit_pct",
         "top_n": 10,

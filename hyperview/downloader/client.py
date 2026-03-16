@@ -6,12 +6,8 @@ from typing import Any
 import pandas as pd
 
 from ..models import CandleRequest
-
-# Re-export for backward compatibility — external code imports this from here.
-from ._tv.credentials import TradingViewCredentials  # noqa: F401
-
-from ._tv.cache import CandleCache, merge_frames, slice_frame
-from ._tv.session import ChartSession
+from .cache import CandleCache, merge_frames, slice_frame
+from .session import ChartSession
 
 
 class TradingViewDataClient:
@@ -19,7 +15,6 @@ class TradingViewDataClient:
 
     def __init__(self, cache_dir: str | Path | None = None) -> None:
         self._cache = CandleCache(Path(cache_dir or "data"))
-        self.last_history_metadata: dict[str, Any] | None = None
 
     @property
     def cache_dir(self) -> Path:
@@ -33,7 +28,6 @@ class TradingViewDataClient:
     ) -> pd.DataFrame:
         cached = None if force_refresh else self._cache.load(request)
         if cached is not None and (cache_only or self._cache.covers_range(cached, request)):
-            self.last_history_metadata = {"source": "cache"}
             return slice_frame(cached, request)
         if cache_only:
             raise FileNotFoundError(
@@ -42,9 +36,7 @@ class TradingViewDataClient:
                 f"Run 'hyperview download-data' first."
             )
 
-        session = ChartSession(request)
-        dataframe, metadata = session.download()
-        self.last_history_metadata = metadata
+        dataframe = ChartSession(request).download()
 
         merged = merge_frames(cached, dataframe) if cached is not None else dataframe
         # Safety: never let a re-download shrink the cache.
@@ -118,10 +110,12 @@ class TradingViewDataClient:
 
 
 def _parse_cache_stem(stem: str) -> tuple[str | None, str | None, str | None, str, str]:
-    """Parse cache filename stem across legacy and current naming conventions."""
-    # Preferred:
-    #   TF-session-EXCHANGE-SYMBOL
-    #   TF-session-EXCHANGE-SYMBOL-adjustment (only for non-default adjustment)
+    """Parse cache filename stem across naming conventions.
+
+    Preferred:  TF-session-EXCHANGE-SYMBOL[-adjustment]
+    Legacy:     EX_SYM_TF_session[_adjustment]
+    """
+    # -- Preferred hyphen-delimited format --
     hyphen_parts = stem.split("-", 3)
     if len(hyphen_parts) == 4:
         timeframe, session, exchange, symbol_part = hyphen_parts
@@ -135,38 +129,13 @@ def _parse_cache_stem(stem: str) -> tuple[str | None, str | None, str | None, st
         if timeframe and session and exchange and symbol_part:
             return exchange, symbol_part, timeframe, session, adjustment
 
-    # Legacy with explicit metadata suffixes:
-    #   EX_SYM_TF__session-extended__adj-splits
-    if "__" in stem:
-        stem_parts = stem.split("__")
-        base = stem_parts[0]
-        metadata_parts = stem_parts[1:]
-        parts = base.split("_")
-        if len(parts) < 3:
-            return None, None, None, "unknown", "unknown"
-        exchange = parts[0]
-        symbol = parts[1]
-        timeframe = "_".join(parts[2:])
-        session = "unknown"
-        adjustment = "unknown"
-        for item in metadata_parts:
-            if item.startswith("session-"):
-                session = item.removeprefix("session-")
-            if item.startswith("adj-"):
-                adjustment = item.removeprefix("adj-")
-        return exchange, symbol, timeframe, session, adjustment
-
-    # Current:
-    #   EX_SYM_TF_session
-    #   EX_SYM_TF_session_adjustment (only for non-default adjustment)
+    # -- Underscore-delimited format --
     parts = stem.split("_")
     if len(parts) < 3:
         return None, None, None, "unknown", "unknown"
 
     exchange = parts[0]
     symbol = parts[1]
-    session = "unknown"
-    adjustment = "unknown"
 
     if len(parts) >= 5 and parts[-2] in {"regular", "extended"}:
         session = parts[-2]
@@ -176,9 +145,8 @@ def _parse_cache_stem(stem: str) -> tuple[str | None, str | None, str | None, st
 
     if len(parts) >= 4 and parts[-1] in {"regular", "extended"}:
         session = parts[-1]
-        adjustment = "splits"
         timeframe = "_".join(parts[2:-1])
-        return exchange, symbol, timeframe, session, adjustment
+        return exchange, symbol, timeframe, session, "splits"
 
     timeframe = "_".join(parts[2:])
-    return exchange, symbol, timeframe, session, adjustment
+    return exchange, symbol, timeframe, "unknown", "unknown"

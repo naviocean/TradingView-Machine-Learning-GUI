@@ -6,18 +6,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
-_ALLOWED_SESSIONS = {"regular", "extended"}
-_ALLOWED_MODES = {"long", "short", "both"}
-_ALLOWED_ADJUSTMENTS = {"splits", "dividends", "none"}
-_ALLOWED_OBJECTIVES = {
-    "net_profit_pct",
-    "profit_factor",
-    "win_rate_pct",
-    "max_drawdown_pct",
-    "trade_count",
-}
-_ALLOWED_SEARCH_METHODS = {"grid", "bayesian"}
+from .validators import (
+    ALLOWED_ADJUSTMENTS,
+    ALLOWED_MODES,
+    ALLOWED_OBJECTIVES,
+    ALLOWED_SESSIONS,
+    check_choice,
+    check_non_empty_string,
+    check_positive_number,
+    require_pair_string,
+)
 _PRESET_SCOPE_KEYS = ("pair", "timeframe", "session", "adjustment", "mode")
 
 # Built once at import time — avoids recreating these sets on every _validate_payload call.
@@ -155,8 +153,8 @@ def _validate_payload(payload: dict[str, Any]) -> None:
             f"Preset file contains unsupported top-level keys: {', '.join(unknown_top_level)}"
         )
 
-    _require_non_empty_string(payload.get("strategy"), "strategy")
-    _require_non_empty_string(payload.get("updated_at"), "updated_at")
+    check_non_empty_string(payload.get("strategy"), "strategy")
+    check_non_empty_string(payload.get("updated_at"), "updated_at")
     presets = payload.get("presets")
     if not isinstance(presets, list):
         raise ValueError("Preset file value 'presets' must be a list")
@@ -171,16 +169,16 @@ def _validate_payload(payload: dict[str, Any]) -> None:
                 f"Preset file value '{prefix}' contains unsupported keys: {', '.join(unknown_keys)}"
             )
 
-        _require_pair_string(preset.get("pair"), f"{prefix}.pair")
-        _require_non_empty_string(preset.get("timeframe"), f"{prefix}.timeframe")
-        _require_choice(preset.get("session"), _ALLOWED_SESSIONS, f"{prefix}.session")
-        _require_choice(preset.get("adjustment"), _ALLOWED_ADJUSTMENTS, f"{prefix}.adjustment")
-        _require_choice(preset.get("mode"), _ALLOWED_MODES, f"{prefix}.mode")
-        _require_positive_number(preset.get("sl"), f"{prefix}.sl")
-        _require_positive_number(preset.get("tp"), f"{prefix}.tp")
-        _require_choice(preset.get("objective"), _ALLOWED_OBJECTIVES, f"{prefix}.objective")
-        _require_choice(preset.get("search_method"), _ALLOWED_SEARCH_METHODS, f"{prefix}.search_method")
-        _require_non_empty_string(preset.get("updated_at"), f"{prefix}.updated_at")
+        require_pair_string(preset.get("pair"), key=f"{prefix}.pair", label="Preset file value")
+        check_non_empty_string(preset.get("timeframe"), f"{prefix}.timeframe")
+        check_choice(preset.get("session"), ALLOWED_SESSIONS, f"{prefix}.session")
+        check_choice(preset.get("adjustment"), ALLOWED_ADJUSTMENTS, f"{prefix}.adjustment")
+        check_choice(preset.get("mode"), ALLOWED_MODES, f"{prefix}.mode")
+        check_positive_number(preset.get("sl"), f"{prefix}.sl")
+        check_positive_number(preset.get("tp"), f"{prefix}.tp")
+        check_choice(preset.get("objective"), ALLOWED_OBJECTIVES, f"{prefix}.objective")
+        check_choice(preset.get("search_method"), frozenset({"bayesian"}), f"{prefix}.search_method")
+        check_non_empty_string(preset.get("updated_at"), f"{prefix}.updated_at")
         if "metrics" in preset:
             _validate_metrics(preset["metrics"], f"{prefix}.metrics")
 
@@ -193,32 +191,6 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _require_choice(value: Any, allowed: set[str], key: str) -> None:
-    if not isinstance(value, str) or value not in allowed:
-        choices = ", ".join(sorted(allowed))
-        raise ValueError(f"Preset file value '{key}' must be one of: {choices}")
-
-
-def _require_non_empty_string(value: Any, key: str) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Preset file value '{key}' must be a non-empty string")
-
-
-def _require_positive_number(value: Any, key: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) <= 0:
-        raise ValueError(f"Preset file value '{key}' must be greater than 0")
-
-
 def _validate_metrics(value: Any, key: str) -> None:
     if not isinstance(value, dict):
         raise ValueError(f"Preset file value '{key}' must be an object")
-
-
-def _require_pair_string(value: Any, key: str) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Preset file value '{key}' must be a non-empty string")
-    parts = value.split(":")
-    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
-        raise ValueError(
-            f"Preset file value '{key}' has invalid format '{value}'. Expected 'EXCHANGE:SYMBOL'."
-        )

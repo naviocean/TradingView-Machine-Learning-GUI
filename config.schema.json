@@ -91,15 +91,9 @@
             "type": "object",
             "description": "Parameters controlling hyperparameter optimization runs.",
             "properties": {
-                "search_method": {
-                    "type": "string",
-                    "description": "Optimization search algorithm.",
-                    "enum": ["grid", "bayesian"],
-                    "default": "grid"
-                },
                 "n_trials": {
                     "type": "integer",
-                    "description": "Number of trials for bayesian search.",
+                    "description": "Number of trials for Bayesian (Optuna TPE) optimization.",
                     "default": 200,
                     "minimum": 1
                 },

@@ -66,16 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ho.add_argument("--top-n", type=int, default=None)
     ho.add_argument(
-        "--search-method",
-        choices=["grid", "bayesian"],
-        default=None,
-        help="Search strategy: 'grid' (two-stage coarse+fine) or 'bayesian' (Optuna TPE)",
-    )
-    ho.add_argument(
         "--n-trials",
         type=int,
         default=None,
-        help="Number of Bayesian optimization trials (ignored for grid search)",
+        help="Number of Bayesian optimization trials (default: from config or 200)",
     )
     # ------ list-data ------
     subparsers.add_parser("list-data", help="List cached candle datasets")

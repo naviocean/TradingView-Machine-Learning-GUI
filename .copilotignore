@@ -1,5 +1,5 @@
 # Browser profile data (credential extraction artifacts, not source code)
-_engine/browser_profile/
+hyperview/browser_profile/
 
 # Cached market data CSVs and results output
 data/

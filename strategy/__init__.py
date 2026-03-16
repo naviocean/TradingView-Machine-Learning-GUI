@@ -6,7 +6,7 @@ import importlib
 import pkgutil
 from pathlib import Path
 
-from ._lib.base import BaseStrategy
+from .base import BaseStrategy
 
 
 _STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {}

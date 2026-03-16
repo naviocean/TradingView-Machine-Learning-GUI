@@ -21,10 +21,10 @@ dependencies = [
 ]
 
 [project.scripts]
-hyperview = "_engine.cli:main"
+hyperview = "hyperview.cli:main"
 
 [tool.hatch.build]
 directory = ".build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["_engine", "strategy"]
+packages = ["hyperview", "strategy"]

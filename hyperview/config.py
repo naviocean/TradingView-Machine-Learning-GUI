@@ -7,6 +7,19 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from .validators import (
+    ALLOWED_DATAFORMATS,
+    ALLOWED_MODES,
+    ALLOWED_OBJECTIVES,
+    ALLOWED_SESSIONS,
+    require_choice,
+    require_non_empty_string,
+    require_number,
+    require_pair_string,
+    require_positive_int,
+    require_positive_number,
+)
+
 _log = logging.getLogger(__name__)
 
 
@@ -23,7 +36,6 @@ _DEFAULTS: dict[str, Any] = {
     "pairlist": [],
     "add_config_files": [],
     "optimization": {
-        "search_method": "grid",
         "n_trials": 200,
         "objective": "net_profit_pct",
         "top_n": 10,
@@ -36,18 +48,6 @@ _SEARCH_PATHS = [
     Path("config.json"),
     Path("hyperview.json"),
 ]
-
-_ALLOWED_SESSIONS = {"regular", "extended"}
-_ALLOWED_MODES = {"long", "short", "both"}
-_ALLOWED_DATAFORMATS = {"csv"}
-_ALLOWED_OBJECTIVES = {
-    "net_profit_pct",
-    "profit_factor",
-    "win_rate_pct",
-    "max_drawdown_pct",
-    "trade_count",
-}
-_ALLOWED_SEARCH_METHODS = {"grid", "bayesian"}
 
 _ENV_PREFIX = "HYPERVIEW__"
 
@@ -192,18 +192,18 @@ def _normalize_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_config(config: dict[str, Any]) -> None:
-    _require_non_empty_string(config, "bot_name")
-    _require_non_empty_string(config, "timeframe")
-    _require_choice(config, "session", _ALLOWED_SESSIONS)
-    _require_choice(config, "mode", _ALLOWED_MODES)
-    _require_positive_number(config, "initial_capital")
-    _require_non_empty_string(config, "data_dir")
-    _require_non_empty_string(config, "output_dir")
-    _require_non_empty_string(config, "strategy_path")
-    _require_choice(config, "dataformat", _ALLOWED_DATAFORMATS)
+    require_non_empty_string(config, "bot_name")
+    require_non_empty_string(config, "timeframe")
+    require_choice(config, "session", ALLOWED_SESSIONS)
+    require_choice(config, "mode", ALLOWED_MODES)
+    require_positive_number(config, "initial_capital")
+    require_non_empty_string(config, "data_dir")
+    require_non_empty_string(config, "output_dir")
+    require_non_empty_string(config, "strategy_path")
+    require_choice(config, "dataformat", ALLOWED_DATAFORMATS)
 
     if "strategy" in config and config["strategy"] is not None:
-        _require_non_empty_string(config, "strategy")
+        require_non_empty_string(config, "strategy")
 
     _validate_pairlist(config)
 
@@ -211,10 +211,9 @@ def _validate_config(config: dict[str, Any]) -> None:
     if not isinstance(optimization, dict):
         raise ValueError("Config value 'optimization' must be an object")
 
-    _require_choice(optimization, "search_method", _ALLOWED_SEARCH_METHODS, prefix="optimization.")
-    _require_positive_int(optimization, "n_trials", prefix="optimization.")
-    _require_choice(optimization, "objective", _ALLOWED_OBJECTIVES, prefix="optimization.")
-    _require_positive_int(optimization, "top_n", prefix="optimization.")
+    require_positive_int(optimization, "n_trials", prefix="optimization.")
+    require_choice(optimization, "objective", ALLOWED_OBJECTIVES, prefix="optimization.")
+    require_positive_int(optimization, "top_n", prefix="optimization.")
 
     _validate_range_config(optimization, "sl_range")
     _validate_range_config(optimization, "tp_range")
@@ -226,8 +225,8 @@ def _validate_range_config(optimization: dict[str, Any], key: str) -> None:
     if not isinstance(range_config, dict):
         raise ValueError(f"Config value 'optimization.{key}' must be an object")
 
-    _require_number(range_config, "min", prefix=prefix)
-    _require_number(range_config, "max", prefix=prefix)
+    require_number(range_config, "min", prefix=prefix)
+    require_number(range_config, "max", prefix=prefix)
 
     min_value = float(range_config["min"])
     max_value = float(range_config["max"])
@@ -243,57 +242,4 @@ def _validate_pairlist(config: dict[str, Any]) -> None:
     if not isinstance(pairlist, list):
         raise ValueError("Config value 'pairlist' must be a list of strings (e.g. 'EXCHANGE:SYMBOL')")
     for i, entry in enumerate(pairlist):
-        _require_pair_string(entry, key=f"pairlist[{i}]")
-
-
-def _require_pair_string(value: Any, *, key: str) -> None:
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Config value '{key}' must be a non-empty string")
-    parts = value.split(":")
-    if len(parts) != 2:
-        raise ValueError(
-            f"Config value '{key}' has invalid format '{value}'. "
-            f"Expected 'EXCHANGE:SYMBOL' (e.g. 'NASDAQ:AAPL')."
-        )
-    if not parts[0].strip() or not parts[1].strip():
-        raise ValueError(
-            f"Config value '{key}' has invalid format '{value}'. "
-            f"Both exchange and symbol must be non-empty."
-        )
-
-
-def _require_choice(
-    config: dict[str, Any],
-    key: str,
-    allowed: set[str],
-    *,
-    prefix: str = "",
-) -> None:
-    value = config.get(key)
-    if not isinstance(value, str) or value not in allowed:
-        choices = ", ".join(sorted(allowed))
-        raise ValueError(f"Config value '{prefix}{key}' must be one of: {choices}")
-
-
-def _require_non_empty_string(config: dict[str, Any], key: str, *, prefix: str = "") -> None:
-    value = config.get(key)
-    if not isinstance(value, str) or not value.strip():
-        raise ValueError(f"Config value '{prefix}{key}' must be a non-empty string")
-
-
-def _require_positive_int(config: dict[str, Any], key: str, *, prefix: str = "") -> None:
-    value = config.get(key)
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"Config value '{prefix}{key}' must be a positive integer")
-
-
-def _require_number(config: dict[str, Any], key: str, *, prefix: str = "") -> None:
-    value = config.get(key)
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError(f"Config value '{prefix}{key}' must be a number")
-
-
-def _require_positive_number(config: dict[str, Any], key: str, *, prefix: str = "") -> None:
-    _require_number(config, key, prefix=prefix)
-    if float(config[key]) <= 0:
-        raise ValueError(f"Config value '{prefix}{key}' must be greater than 0")
+        require_pair_string(entry, key=f"pairlist[{i}]")

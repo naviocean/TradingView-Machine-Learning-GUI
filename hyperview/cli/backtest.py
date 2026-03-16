@@ -7,11 +7,11 @@ from pathlib import Path
 
 from rich.console import Console
 
-from .._utils import _format_time, build_risk
-from ..models import BacktestMetrics, BacktestResult, CandleRequest
+from ..models import BacktestMetrics, BacktestResult, CandleRequest, RiskParameters
 from ..presets import find_preset, strategy_preset_path
 from ..backtest.engine import TradingViewLikeBacktester
-from ._helpers import _resolve, load_candles, generate_signals, resolve_pairlist, print_summary_table
+from ..utils import format_time
+from .formatting import _resolve, load_candles, generate_signals, resolve_pairlist, print_summary_table
 from strategy import list_strategies
 
 
@@ -68,14 +68,14 @@ def _run_single_backtest(
             return None
 
         # 3. Run backtest
-        risk = build_risk(mode, sl, tp)
+        risk = RiskParameters.from_mode(mode, sl, tp)
         backtester = TradingViewLikeBacktester(
             candle_request=candle_request, 
             initial_equity=initial_capital
         )
         
         result = backtester.run(signal_frame, risk, mode)
-        elapsed = _format_time(time.time() - t_total)
+        elapsed = format_time(time.time() - t_total)
 
         print(f"✔ {elapsed}")
         return result

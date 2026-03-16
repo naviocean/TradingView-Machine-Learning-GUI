@@ -1,6 +1,6 @@
 """HyperView — CLI-driven TradingView strategy backtester and hyper-optimizer."""
 
-from ._runtime import configure_pycache
+from .runtime import configure_pycache
 
 configure_pycache()
 
