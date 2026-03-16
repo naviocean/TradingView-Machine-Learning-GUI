@@ -18,7 +18,7 @@
     ],
     "optimization": {
         "search_method": "bayesian",
-        "n_trials": 100,
+        "n_trials": 1000,
         "objective": "net_profit_pct",
         "top_n": 10,
         "sl_range": {

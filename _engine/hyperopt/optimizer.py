@@ -14,6 +14,10 @@ from strategy import BaseStrategy
 
 
 def _print_progress(current: int, total: int, start_time: float, phase: str) -> None:
+    if total > 100:
+        interval = max(1, total // 100)
+        if current not in {1, total} and current % interval != 0:
+            return
     elapsed = time.time() - start_time
     pct = current / total * 100
     bar_width = 30
@@ -63,6 +67,8 @@ class _Optimizer:
             candle_request=candle_request,
             initial_equity=initial_equity,
         )
+        self.compiled_signal_frame = self.backtester.compile_signal_frame(signal_frame)
+        self._metrics_cache: dict[tuple[str, float, float], BacktestMetrics] = {}
 
     def optimize(self, request: OptimizationRequest, output_path: Path) -> OptimizationBundle:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,17 +126,16 @@ class _Optimizer:
         def objective(trial: optuna.Trial) -> float:
             sl_value = trial.suggest_float("sl_pct", request.sl_min, request.sl_max, step=0.01)
             tp_value = trial.suggest_float("tp_pct", request.tp_min, request.tp_max, step=0.01)
-            risk = build_risk(request.mode, sl_value, tp_value)
-            result = self.backtester.run(self.signal_frame, risk, request.mode)
-            all_results.append(result.metrics)
+            metrics = self._evaluate_metrics(request.mode, sl_value, tp_value)
+            all_results.append(metrics)
             _print_progress(len(all_results), n_trials, start_time, "Optuna TPE")
-            return _objective_value(result.metrics, objective_name)
+            return _objective_value(metrics, objective_name)
 
         direction = "minimize" if minimize else "maximize"
         study = optuna.create_study(direction=direction, sampler=optuna.samplers.TPESampler(seed=42))
         study.optimize(objective, n_trials=n_trials)
 
-        ranked = _rank_results(all_results, objective_name)
+        ranked = _deduplicate_and_rank(all_results, objective_name)
         top_results = ranked[: request.top_n]
         bundle = OptimizationBundle(
             request=request,
@@ -154,12 +159,21 @@ class _Optimizer:
         count = 0
         for sl_value in sl_values:
             for tp_value in tp_values:
-                risk = build_risk(mode, sl_value, tp_value)
-                result = self.backtester.run(self.signal_frame, risk, mode)
-                results.append(result.metrics)
+                results.append(self._evaluate_metrics(mode, sl_value, tp_value))
                 count += 1
                 _print_progress(count, total, start_time, phase)
         return _rank_results(results, objective)
+
+    def _evaluate_metrics(self, mode: Mode, sl_value: float, tp_value: float) -> BacktestMetrics:
+        key = (mode, round(sl_value, 8), round(tp_value, 8))
+        cached = self._metrics_cache.get(key)
+        if cached is not None:
+            return cached
+
+        risk = build_risk(mode, sl_value, tp_value)
+        metrics = self.backtester.run_metrics(self.compiled_signal_frame, risk, mode)
+        self._metrics_cache[key] = metrics
+        return metrics
 
 
 # ------------------------------------------------------------------
@@ -197,15 +211,27 @@ class _MultiPairOptimizer:
             TradingViewLikeBacktester(candle_request=cr, initial_equity=initial_equity)
             for _, _, _, _, cr in pair_data
         ]
+        self.compiled_signal_frames = [
+            bt.compile_signal_frame(signal_frame)
+            for (_, _, signal_frame, _, _), bt in zip(pair_data, self.backtesters)
+        ]
+        self._candidate_cache: dict[tuple[str, float, float, str], MultiPairCandidate] = {}
 
     def _evaluate_candidate(self, mode: Mode, sl_value: float, tp_value: float, objective: Objective = "net_profit_pct") -> MultiPairCandidate:
         """Run backtest on every pair for a single SL/TP combo and aggregate."""
+        key = (mode, round(sl_value, 8), round(tp_value, 8), objective)
+        cached = self._candidate_cache.get(key)
+        if cached is not None:
+            return cached
+
         risk = build_risk(mode, sl_value, tp_value)
         per_pair: list[BacktestMetrics] = []
-        for (sym, ex, sf, strat, cr), bt in zip(self.pair_data, self.backtesters):
-            result = bt.run(sf, risk, mode)
-            per_pair.append(result.metrics)
-        return _build_candidate(sl_value, tp_value, per_pair, request_objective=objective)
+        for compiled_signal_frame, bt in zip(self.compiled_signal_frames, self.backtesters):
+            per_pair.append(bt.run_metrics(compiled_signal_frame, risk, mode))
+
+        candidate = _build_candidate(sl_value, tp_value, per_pair, request_objective=objective)
+        self._candidate_cache[key] = candidate
+        return candidate
 
     def optimize(self, request: OptimizationRequest, output_path: Path) -> MultiPairOptimizationBundle:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,7 +302,7 @@ class _MultiPairOptimizer:
         # Recompute aggregate objective for ranking after the study
         study.optimize(objective, n_trials=n_trials)
 
-        ranked = _rank_multi_candidates(all_candidates, objective_name)
+        ranked = _deduplicate_and_rank_multi(all_candidates, objective_name)
         top_results = ranked[: request.top_n]
         pairs = [(sym, ex) for sym, ex, _, _, _ in self.pair_data]
         bundle = MultiPairOptimizationBundle(

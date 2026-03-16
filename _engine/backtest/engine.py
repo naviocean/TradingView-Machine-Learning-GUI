@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 
 from ..models import BacktestMetrics, BacktestResult, CandleRequest, Mode, RiskParameters, Trade
@@ -57,6 +58,106 @@ class _PendingOrder:
     signal_close: float
 
 
+@dataclass(frozen=True)
+class _CompiledSignalFrame:
+    time: np.ndarray
+    open: np.ndarray
+    high: np.ndarray
+    low: np.ndarray
+    close: np.ndarray
+    in_date_range: np.ndarray
+    buy_signal: np.ndarray
+    sell_signal: np.ndarray
+    enable_long: np.ndarray
+    enable_short: np.ndarray
+    end_date: str | None
+
+    @property
+    def length(self) -> int:
+        return int(self.time.size)
+
+
+@dataclass
+class _MetricsAccumulator:
+    initial_equity: float
+    equity_reference: float
+    final_closed_equity: float
+    positive_pnl: float = 0.0
+    negative_pnl: float = 0.0
+    wins: int = 0
+    trade_count: int = 0
+    win_return_sum: float = 0.0
+    win_return_count: int = 0
+    loss_return_sum: float = 0.0
+    loss_return_count: int = 0
+    total_return_sum: float = 0.0
+    worst_trade: float = float("inf")
+    max_consec_losses: int = 0
+    current_consec_losses: int = 0
+    sl_exits: int = 0
+    tp_exits: int = 0
+    peak_equity: float = 0.0
+    max_drawdown: float = 0.0
+    prev_curve_value: float = 0.0
+    return_count: int = 0
+    return_mean: float = 0.0
+    return_m2: float = 0.0
+
+    @classmethod
+    def create(cls, initial_equity: float) -> _MetricsAccumulator:
+        return cls(
+            initial_equity=initial_equity,
+            equity_reference=initial_equity,
+            final_closed_equity=initial_equity,
+            peak_equity=initial_equity,
+            prev_curve_value=initial_equity,
+        )
+
+    def record_trade(self, trade: Trade) -> None:
+        pnl = trade.equity_after - self.equity_reference
+        self.equity_reference = trade.equity_after
+        self.final_closed_equity = trade.equity_after
+        self.trade_count += 1
+        self.total_return_sum += trade.return_pct
+        self.worst_trade = min(self.worst_trade, trade.return_pct)
+
+        if pnl >= 0:
+            self.positive_pnl += pnl
+            self.wins += 1
+            self.win_return_sum += trade.return_pct
+            self.win_return_count += 1
+            self.current_consec_losses = 0
+        else:
+            self.negative_pnl += pnl
+            self.loss_return_sum += trade.return_pct
+            self.loss_return_count += 1
+            self.current_consec_losses += 1
+            if self.current_consec_losses > self.max_consec_losses:
+                self.max_consec_losses = self.current_consec_losses
+
+        if trade.exit_reason == "stop_loss":
+            self.sl_exits += 1
+        elif trade.exit_reason == "take_profit":
+            self.tp_exits += 1
+
+    def observe_equity(self, curve_value: float) -> None:
+        if curve_value > self.peak_equity:
+            self.peak_equity = curve_value
+        if self.peak_equity > 0:
+            drawdown = ((self.peak_equity - curve_value) / self.peak_equity) * 100.0
+            if drawdown > self.max_drawdown:
+                self.max_drawdown = drawdown
+
+        if self.prev_curve_value != 0:
+            bar_return = (curve_value - self.prev_curve_value) / self.prev_curve_value
+            self.return_count += 1
+            delta = bar_return - self.return_mean
+            self.return_mean += delta / self.return_count
+            self.return_m2 += delta * (bar_return - self.return_mean)
+
+        self.prev_curve_value = curve_value
+
+
 class TradingViewLikeBacktester:
     """Backtester that mirrors TradingView's default broker-emulator assumptions."""
 
@@ -67,65 +168,136 @@ class TradingViewLikeBacktester:
     ) -> None:
         self.candle_request = candle_request
         self.initial_equity = float(initial_equity)
+        mintick = f"{self.candle_request.mintick:.10f}".rstrip("0").rstrip(".")
+        self._price_decimals = max(0, len(mintick.split(".")[-1])) if "." in mintick else 0
 
     def run(
         self,
-        signal_frame: pd.DataFrame,
+        signal_frame: pd.DataFrame | _CompiledSignalFrame,
         risk: RiskParameters,
         mode: Mode,
     ) -> BacktestResult:
+        compiled = self.compile_signal_frame(signal_frame)
+        metrics, trades, equity_curve = self._simulate(compiled, risk, mode, include_details=True)
+        return BacktestResult(metrics=metrics, trades=trades, equity_curve=equity_curve)
+
+    def run_metrics(
+        self,
+        signal_frame: pd.DataFrame | _CompiledSignalFrame,
+        risk: RiskParameters,
+        mode: Mode,
+    ) -> BacktestMetrics:
+        compiled = self.compile_signal_frame(signal_frame)
+        metrics, _, _ = self._simulate(compiled, risk, mode, include_details=False)
+        return metrics
+
+    def compile_signal_frame(self, signal_frame: pd.DataFrame | _CompiledSignalFrame) -> _CompiledSignalFrame:
+        if isinstance(signal_frame, _CompiledSignalFrame):
+            return signal_frame
+
         dataframe = signal_frame.reset_index(drop=True)
-        # Round OHLC to tick precision to match TradingView's syminfo.mintick
-        decimals = max(0, len(str(self.candle_request.mintick).rstrip('0').split('.')[-1]))
-        for col in ("open", "high", "low", "close"):
-            if col in dataframe.columns:
-                dataframe[col] = dataframe[col].round(decimals)
+        close_series = dataframe["close"].round(self._price_decimals)
+        time_values = dataframe["time"].to_numpy(dtype=np.int64, copy=True)
+        end_date = None
+        if time_values.size:
+            end_date = pd.Timestamp(int(time_values.max()), unit="s", tz="UTC").strftime("%Y-%m-%d")
+
+        return _CompiledSignalFrame(
+            time=time_values,
+            open=dataframe["open"].round(self._price_decimals).to_numpy(dtype=np.float64, copy=True),
+            high=dataframe["high"].round(self._price_decimals).to_numpy(dtype=np.float64, copy=True),
+            low=dataframe["low"].round(self._price_decimals).to_numpy(dtype=np.float64, copy=True),
+            close=close_series.to_numpy(dtype=np.float64, copy=True),
+            in_date_range=dataframe["in_date_range"].fillna(False).to_numpy(dtype=bool, copy=True),
+            buy_signal=dataframe["buy_signal"].fillna(False).to_numpy(dtype=bool, copy=True),
+            sell_signal=dataframe["sell_signal"].fillna(False).to_numpy(dtype=bool, copy=True),
+            enable_long=dataframe["enable_long"].fillna(False).to_numpy(dtype=bool, copy=True),
+            enable_short=dataframe["enable_short"].fillna(False).to_numpy(dtype=bool, copy=True),
+            end_date=end_date,
+        )
+
+    def _simulate(
+        self,
+        signal_frame: _CompiledSignalFrame,
+        risk: RiskParameters,
+        mode: Mode,
+        *,
+        include_details: bool,
+    ) -> tuple[BacktestMetrics, list[Trade], list[float]]:
         pending: _PendingOrder | None = None
         position: _Position | None = None
         equity = self.initial_equity
-        equity_curve: list[float] = [equity]
-        trades: list[Trade] = []
+        stats = _MetricsAccumulator.create(self.initial_equity)
+        equity_curve: list[float] = [equity] if include_details else []
+        trades: list[Trade] = [] if include_details else []
 
-        for index, bar in dataframe.iterrows():
-            position, equity, filled_trades = self._apply_pending_order(position, pending, bar, risk, equity)
+        for index in range(signal_frame.length):
+            bar_time = int(signal_frame.time[index])
+            open_price = float(signal_frame.open[index])
+            high_price = float(signal_frame.high[index])
+            low_price = float(signal_frame.low[index])
+            close_price = float(signal_frame.close[index])
+
+            position, equity, filled_trade = self._apply_pending_order(
+                position,
+                pending,
+                bar_time,
+                open_price,
+                risk,
+                equity,
+            )
             pending = None
-            trades.extend(filled_trades)
+            if filled_trade is not None:
+                stats.record_trade(filled_trade)
+                if include_details:
+                    trades.append(filled_trade)
 
             if position is not None:
-                exit_price, exit_reason = self._check_bar_exit(position, bar)
+                exit_price, exit_reason = self._check_bar_exit(position, open_price, high_price, low_price, close_price)
                 if exit_price is not None and exit_reason is not None:
-                    trade, equity = self._close_position(position, int(bar["time"]), exit_price, exit_reason, equity)
-                    trades.append(trade)
+                    trade, equity = self._close_position(position, bar_time, exit_price, exit_reason, equity)
+                    stats.record_trade(trade)
+                    if include_details:
+                        trades.append(trade)
                     position = None
 
-            equity_curve.append(self._mark_to_market(equity, position, float(bar["close"])))
+            curve_value = self._mark_to_market(equity, position, close_price)
+            stats.observe_equity(curve_value)
+            if include_details:
+                equity_curve.append(curve_value)
 
-            pending = self._build_next_order(bar, mode)
-            if pending is not None and index == len(dataframe) - 1:
+            pending = self._build_next_order(
+                in_date_range=bool(signal_frame.in_date_range[index]),
+                buy_signal=bool(signal_frame.buy_signal[index]),
+                sell_signal=bool(signal_frame.sell_signal[index]),
+                enable_long=bool(signal_frame.enable_long[index]),
+                enable_short=bool(signal_frame.enable_short[index]),
+                close_price=close_price,
+                mode=mode,
+            )
+            if pending is not None and index == signal_frame.length - 1:
                 pending = None
 
-        metrics = self._build_metrics(trades, equity_curve, risk, mode, dataframe)
-        return BacktestResult(metrics=metrics, trades=trades, equity_curve=equity_curve)
+        metrics = self._build_metrics(stats, risk, mode, signal_frame.end_date)
+        return metrics, trades, equity_curve
 
     def _apply_pending_order(
         self,
         position: _Position | None,
         pending: _PendingOrder | None,
-        bar: pd.Series,
+        bar_time: int,
+        open_price: float,
         risk: RiskParameters,
         equity: float,
-    ) -> tuple[_Position | None, float, list[Trade]]:
+    ) -> tuple[_Position | None, float, Trade | None]:
         if pending is None:
-            return position, equity, []
+            return position, equity, None
 
-        open_price = float(bar["open"])
-        bar_time = int(bar["time"])
-        trades: list[Trade] = []
+        filled_trade: Trade | None = None
 
         if pending.action == "open_long":
             if position is not None and position.direction == "short":
-                trade, equity = self._close_position(position, bar_time, open_price, "reverse_to_long", equity)
-                trades.append(trade)
+                filled_trade, equity = self._close_position(position, bar_time, open_price, "reverse_to_long", equity)
                 position = None
             if position is None:
                 sl_offset = pending.signal_close * (risk.long_stoploss_pct / 100.0)
@@ -140,8 +312,7 @@ class TradingViewLikeBacktester:
                 )
         elif pending.action == "open_short":
             if position is not None and position.direction == "long":
-                trade, equity = self._close_position(position, bar_time, open_price, "reverse_to_short", equity)
-                trades.append(trade)
+                filled_trade, equity = self._close_position(position, bar_time, open_price, "reverse_to_short", equity)
                 position = None
             if position is None:
                 sl_offset = pending.signal_close * (risk.short_stoploss_pct / 100.0)
@@ -155,14 +326,16 @@ class TradingViewLikeBacktester:
                     equity_before=equity,
                 )
 
-        return position, equity, trades
+        return position, equity, filled_trade
 
-    def _check_bar_exit(self, position: _Position, bar: pd.Series) -> tuple[float | None, str | None]:
-        open_price = float(bar["open"])
-        high_price = float(bar["high"])
-        low_price = float(bar["low"])
-        close_price = float(bar["close"])
-
+    def _check_bar_exit(
+        self,
+        position: _Position,
+        open_price: float,
+        high_price: float,
+        low_price: float,
+        close_price: float,
+    ) -> tuple[float | None, str | None]:
         if abs(open_price - high_price) <= abs(open_price - low_price):
             path = [open_price, high_price, low_price, close_price]
         else:
@@ -184,19 +357,27 @@ class TradingViewLikeBacktester:
 
         return None, None
 
-    def _build_next_order(self, bar: pd.Series, mode: Mode) -> _PendingOrder | None:
-        if not bool(bar["in_date_range"]):
+    def _build_next_order(
+        self,
+        *,
+        in_date_range: bool,
+        buy_signal: bool,
+        sell_signal: bool,
+        enable_long: bool,
+        enable_short: bool,
+        close_price: float,
+        mode: Mode,
+    ) -> _PendingOrder | None:
+        if not in_date_range:
             return None
 
-        buy_signal = bool(bar["buy_signal"])
-        sell_signal = bool(bar["sell_signal"])
-        long_allowed = bool(bar["enable_long"]) and mode in {"long", "both"}
-        short_allowed = bool(bar["enable_short"]) and mode in {"short", "both"}
+        long_allowed = enable_long and mode in {"long", "both"}
+        short_allowed = enable_short and mode in {"short", "both"}
 
         if buy_signal and long_allowed and not sell_signal:
-            return _PendingOrder("open_long", signal_close=float(bar["close"]))
+            return _PendingOrder("open_long", signal_close=close_price)
         if sell_signal and short_allowed and not buy_signal:
-            return _PendingOrder("open_short", signal_close=float(bar["close"]))
+            return _PendingOrder("open_short", signal_close=close_price)
         return None
 
     def _close_position(
@@ -235,121 +416,63 @@ class TradingViewLikeBacktester:
 
     def _build_metrics(
         self,
-        trades: list[Trade],
-        equity_curve: list[float],
+        stats: _MetricsAccumulator,
         risk: RiskParameters,
         mode: Mode,
-        dataframe: pd.DataFrame,
+        end_date: str | None,
     ) -> BacktestMetrics:
-        positive_pnl = 0.0
-        negative_pnl = 0.0
-        wins = 0
-        equity_reference = self.initial_equity
-
-        win_returns: list[float] = []
-        loss_returns: list[float] = []
-
-        for trade in trades:
-            pnl = trade.equity_after - equity_reference
-            equity_reference = trade.equity_after
-            if pnl >= 0:
-                positive_pnl += pnl
-                wins += 1
-                win_returns.append(trade.return_pct)
-            else:
-                negative_pnl += pnl
-                loss_returns.append(trade.return_pct)
-
-        peak = equity_curve[0]
-        max_drawdown = 0.0
-        for value in equity_curve:
-            if value > peak:
-                peak = value
-            if peak > 0:
-                drawdown = ((peak - value) / peak) * 100.0
-                if drawdown > max_drawdown:
-                    max_drawdown = drawdown
-
-        win_rate = (wins / len(trades) * 100.0) if trades else 0.0
-        if negative_pnl == 0.0:
-            profit_factor = float("inf") if positive_pnl > 0.0 else 0.0
+        win_rate = (stats.wins / stats.trade_count * 100.0) if stats.trade_count else 0.0
+        if stats.negative_pnl == 0.0:
+            profit_factor = float("inf") if stats.positive_pnl > 0.0 else 0.0
         else:
-            profit_factor = positive_pnl / abs(negative_pnl) if positive_pnl > 0.0 else 0.0
+            profit_factor = stats.positive_pnl / abs(stats.negative_pnl) if stats.positive_pnl > 0.0 else 0.0
 
         sl_pct = risk.long_stoploss_pct if mode != "short" else risk.short_stoploss_pct
         tp_pct = risk.long_takeprofit_pct if mode != "short" else risk.short_takeprofit_pct
-        final_equity = trades[-1].equity_after if trades else self.initial_equity
+        final_equity = stats.final_closed_equity
         net_profit_pct = ((final_equity - self.initial_equity) / self.initial_equity) * 100.0
 
-        # --- New metrics ---
+        avg_win = (stats.win_return_sum / stats.win_return_count) if stats.win_return_count else 0.0
+        avg_loss = (stats.loss_return_sum / stats.loss_return_count) if stats.loss_return_count else 0.0
+        expectancy = (stats.total_return_sum / stats.trade_count) if stats.trade_count else 0.0
+        signal_exits = stats.trade_count - stats.sl_exits - stats.tp_exits
+        n = stats.trade_count or 1
+        sl_exit_pct = stats.sl_exits / n * 100.0
+        tp_exit_pct = stats.tp_exits / n * 100.0
+        signal_exit_pct = signal_exits / n * 100.0
 
-        # Per-trade quality
-        avg_win = (sum(win_returns) / len(win_returns)) if win_returns else 0.0
-        avg_loss = (sum(loss_returns) / len(loss_returns)) if loss_returns else 0.0
-        expectancy = (sum(t.return_pct for t in trades) / len(trades)) if trades else 0.0
-        worst_trade = min((t.return_pct for t in trades), default=0.0)
-
-        # Max consecutive losses
-        max_consec = 0
-        cur_consec = 0
-        for t in trades:
-            if t.return_pct < 0:
-                cur_consec += 1
-                if cur_consec > max_consec:
-                    max_consec = cur_consec
-            else:
-                cur_consec = 0
-
-        # Exit reason breakdown
-        n = len(trades) or 1
-        sl_exits = sum(1 for t in trades if t.exit_reason == "stop_loss")
-        tp_exits = sum(1 for t in trades if t.exit_reason == "take_profit")
-        sig_exits = len(trades) - sl_exits - tp_exits
-        sl_exit_pct = sl_exits / n * 100.0
-        tp_exit_pct = tp_exits / n * 100.0
-        signal_exit_pct = sig_exits / n * 100.0
-
-        # Sharpe ratio (annualised, from bar-level equity returns)
         sharpe = 0.0
-        if len(equity_curve) > 1:
-            returns = []
-            for i in range(1, len(equity_curve)):
-                prev = equity_curve[i - 1]
-                if prev != 0:
-                    returns.append((equity_curve[i] - prev) / prev)
-            if returns:
-                mean_r = sum(returns) / len(returns)
-                var_r = sum((r - mean_r) ** 2 for r in returns) / len(returns)
-                std_r = math.sqrt(var_r)
-                if std_r > 0:
-                    sharpe = (mean_r / std_r) * _annualization_factor(self.candle_request.timeframe)
+        if stats.return_count > 0:
+            variance = stats.return_m2 / stats.return_count
+            std_r = math.sqrt(variance)
+            if std_r > 0:
+                sharpe = (stats.return_mean / std_r) * _annualization_factor(self.candle_request.timeframe)
 
-        # Calmar ratio
         calmar = 0.0
-        if max_drawdown > 0:
-            calmar = net_profit_pct / max_drawdown
+        if stats.max_drawdown > 0:
+            calmar = net_profit_pct / stats.max_drawdown
 
         return BacktestMetrics(
             symbol=f"{self.candle_request.exchange}:{self.candle_request.symbol}",
             timeframe=self.candle_request.timeframe,
             start=self.candle_request.start,
-            end=self.candle_request.end or pd.Timestamp(int(dataframe["time"].max()), unit="s", tz="UTC").strftime("%Y-%m-%d"),
+            end=self.candle_request.end or end_date,
             mode=mode,
             sl_pct=round(sl_pct, 2),
             tp_pct=round(tp_pct, 2),
             net_profit_pct=round(net_profit_pct, 2),
-            max_drawdown_pct=round(max_drawdown, 2),
+            max_drawdown_pct=round(stats.max_drawdown, 2),
             win_rate_pct=round(win_rate, 2),
             profit_factor=round(profit_factor, 2) if profit_factor != float("inf") else profit_factor,
-            trade_count=len(trades),
+            trade_count=stats.trade_count,
             equity_final=round(final_equity, 2),
             sharpe_ratio=round(sharpe, 2),
             calmar_ratio=round(calmar, 2),
             expectancy_pct=round(expectancy, 2),
             avg_win_pct=round(avg_win, 2),
             avg_loss_pct=round(avg_loss, 2),
-            worst_trade_pct=round(worst_trade, 2),
-            max_consec_losses=max_consec,
+            worst_trade_pct=round(stats.worst_trade if stats.trade_count else 0.0, 2),
+            max_consec_losses=stats.max_consec_losses,
             sl_exit_pct=round(sl_exit_pct, 2),
             tp_exit_pct=round(tp_exit_pct, 2),
             signal_exit_pct=round(signal_exit_pct, 2),
