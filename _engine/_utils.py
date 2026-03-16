@@ -19,12 +19,10 @@ def _format_time(seconds: float) -> str:
 
 def build_risk(mode: Mode, sl_value: float, tp_value: float) -> RiskParameters:
     """Construct RiskParameters based on trade mode and SL/TP percentages."""
-    long_sl = 0.0 if mode == "short" else sl_value
-    long_tp = 0.0 if mode == "short" else tp_value
-
+    is_short = mode == "short"
     return RiskParameters(
-        long_stoploss_pct=long_sl,
-        long_takeprofit_pct=long_tp,
+        long_stoploss_pct=0.0 if is_short else sl_value,
+        long_takeprofit_pct=0.0 if is_short else tp_value,
         short_stoploss_pct=sl_value,
         short_takeprofit_pct=tp_value,
     )

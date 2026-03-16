@@ -5,6 +5,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -97,12 +98,7 @@ def _load_cookie_map(profile_dir: Path) -> dict[str, str]:
         query="select name, value from moz_cookies where host like ? order by name",
         parameters=("%tradingview.com%",),
     )
-    cookies: dict[str, str] = {}
-    for name, value in rows:
-        cleaned = _clean(str(value))
-        if cleaned is not None:
-            cookies[str(name)] = cleaned
-    return cookies
+    return {str(name): cleaned for name, value in rows if (cleaned := _clean(str(value))) is not None}
 
 
 def _read_local_storage(profile_dir: Path, keys: list[str]) -> str | None:
@@ -133,12 +129,8 @@ def _read_sqlite_rows(
         snapshot_path = Path(tmp) / source_path.name
         _copy_sqlite_snapshot(source_path, snapshot_path)
         try:
-            connection = sqlite3.connect(snapshot_path)
-            try:
-                cursor = connection.execute(query, parameters)
-                return cursor.fetchall()
-            finally:
-                connection.close()
+            with closing(sqlite3.connect(snapshot_path)) as connection:
+                return connection.execute(query, parameters).fetchall()
         except sqlite3.Error:
             return []
 

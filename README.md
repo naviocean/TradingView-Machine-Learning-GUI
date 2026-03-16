@@ -94,10 +94,12 @@ _engine/                          Internal processing logic
 
 HyperView loads defaults from `config.json` at the project root. CLI flags always override config values.
 
+The sample below shows a customized setup; if a key is omitted, HyperView falls back to runtime defaults.
+
 ```json
 {
     "timeframe": "1h",
-    "session": "extended",
+    "session": "regular",
     "mode": "long",
     "strategy": "adx_stochastic",
     "initial_capital": 100000,
@@ -110,8 +112,8 @@ HyperView loads defaults from `config.json` at the project root. CLI flags alway
         "COINBASE:ETHUSD"
     ],
     "optimization": {
-        "search_method": "bayesian",
-        "n_trials": 100,
+        "search_method": "grid",
+        "n_trials": 200,
         "objective": "net_profit_pct",
         "top_n": 10,
         "sl_range": { "min": 1.0, "max": 15.0 },
@@ -199,8 +201,8 @@ hyperview hyperopt --symbol NASDAQ:NFLX --search-method bayesian --n-trials 300
 | Flag | Required | Default | Description |
 |------|----------|---------|-------------|
 | `--symbol` | No | config pairlist | `EXCHANGE:SYMBOL` pair (overrides pairlist) |
-| `--sl-min/max/step` | No | config | Stop-loss % search range |
-| `--tp-min/max/step` | No | config | Take-profit % search range |
+| `--sl-min`, `--sl-max` | No | config | Stop-loss % search range |
+| `--tp-min`, `--tp-max` | No | config | Take-profit % search range |
 | `--search-method` | No | config | `grid` or `bayesian` |
 | `--n-trials` | No | config | Bayesian trial count |
 | `--objective` | No | config | `net_profit_pct` `profit_factor` `win_rate_pct` `max_drawdown_pct` `trade_count` |

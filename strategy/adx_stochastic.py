@@ -6,7 +6,7 @@ import pandas as pd
 
 from ._lib.base import BaseStrategy
 from . import register_strategy
-from ._lib.indicators import adx, stochastic, crossed_above, crossed_below, barssince, to_unix_timestamp
+from ._lib.indicators import adx, stochastic, crossed_above, crossed_below, barssince
 
 
 @register_strategy
@@ -85,15 +85,7 @@ class AdxStochasticStrategy(BaseStrategy):
         dataframe["sell_signal"] = strong_trend & was_overbought & k_cross_below_d
 
         # Date range filter
-        start_ts = to_unix_timestamp(s["start"])
-        end_ts = to_unix_timestamp(s["end"])
-        if start_ts is None and end_ts is None:
-            dataframe["in_date_range"] = True
-        else:
-            lower = dataframe["time"] >= (start_ts if start_ts is not None else dataframe["time"].min())
-            upper_bound = end_ts if end_ts is not None else (dataframe["time"].max() + 1)
-            upper = dataframe["time"] < upper_bound
-            dataframe["in_date_range"] = lower & upper
+        self._apply_date_range(dataframe, s["start"], s["end"])
 
         dataframe["enable_long"] = s["enable_long"]
         dataframe["enable_short"] = s["enable_short"]

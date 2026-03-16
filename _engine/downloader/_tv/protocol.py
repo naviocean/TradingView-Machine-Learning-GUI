@@ -6,10 +6,12 @@ import re
 import string
 from typing import Any
 
+# Pre-compiled once at import time — called on every WebSocket frame received.
+_PAYLOAD_SPLIT_RE = re.compile(r"~m~\d+~m~")
+
 
 def split_payloads(raw_message: str) -> list[str]:
-    matches = re.split(r"~m~\d+~m~", raw_message)
-    return [match for match in matches if match]
+    return [m for m in _PAYLOAD_SPLIT_RE.split(raw_message) if m]
 
 
 def encode_message(function: str, parameters: list[Any]) -> str:
@@ -22,7 +24,7 @@ def encode_raw(payload: str) -> str:
 
 
 def generate_session(prefix: str) -> str:
-    suffix = "".join(random.choice(string.ascii_lowercase) for _ in range(12))
+    suffix = "".join(random.choices(string.ascii_lowercase, k=12))
     return f"{prefix}_{suffix}"
 
 

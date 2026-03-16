@@ -89,10 +89,14 @@ class TradingViewDataClient:
         entries: list[dict[str, Any]] = []
         for csv_path in sorted(self._cache.cache_dir.glob("*.csv")):
             try:
-                frame = pd.read_csv(csv_path)
+                # Load only the time column — all other columns are unused here.
+                frame = pd.read_csv(csv_path, usecols=["time"])
+            except ValueError:
+                # "time" column absent in this file — skip it.
+                continue
             except Exception:
                 continue
-            if frame.empty or "time" not in frame.columns:
+            if frame.empty:
                 continue
             exchange, symbol, timeframe, session, adjustment = _parse_cache_stem(csv_path.stem)
             if exchange is None or symbol is None or timeframe is None:

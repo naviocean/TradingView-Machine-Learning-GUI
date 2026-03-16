@@ -159,7 +159,7 @@ class ChartSession:
             "Origin: https://www.tradingview.com",
             f"User-Agent: {DEFAULT_USER_AGENT}",
         ]
-        header_cookies = cookie_header_value(getattr(credentials, "cookies", {}))
+        header_cookies = cookie_header_value(credentials.cookies)
         if header_cookies:
             headers.append(f"Cookie: {header_cookies}")
         elif credentials.session_id:
@@ -198,10 +198,8 @@ def _extract_dataframe(payloads: list[dict[str, Any]]) -> pd.DataFrame:
 
     frame = pd.DataFrame(bars)
     columns = ["time", "open", "high", "low", "close", "volume"]
-    if frame.shape[1] < len(columns):
-        for index in range(frame.shape[1], len(columns)):
-            frame[index] = None
-    frame = frame.iloc[:, : len(columns)]
+    # Pad missing columns with NaN if TradingView returned fewer fields.
+    frame = frame.reindex(columns=range(len(columns)))
     frame.columns = columns
     frame = frame.dropna(subset=["time", "open", "high", "low", "close"])
     frame["time"] = frame["time"].astype("int64")

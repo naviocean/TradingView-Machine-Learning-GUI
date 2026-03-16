@@ -6,7 +6,7 @@ import pandas as pd
 
 from ._lib.base import BaseStrategy
 from . import register_strategy
-from ._lib.indicators import barssince, crossed_above, crossed_below, macd, rsi, to_unix_timestamp
+from ._lib.indicators import barssince, crossed_above, crossed_below, macd, rsi
 
 
 @register_strategy
@@ -49,22 +49,14 @@ class MacdRsiStrategy(BaseStrategy):
         rsi_overbought_hit = dataframe["rsi"] >= s["rsi_overbought"]
         dataframe["bars_since_oversold"] = barssince(rsi_oversold_hit)
         dataframe["bars_since_overbought"] = barssince(rsi_overbought_hit)
-        dataframe["was_oversold"] = dataframe["bars_since_oversold"] <= s["signal_lookback_bars"]
-        dataframe["was_overbought"] = dataframe["bars_since_overbought"] <= s["signal_lookback_bars"]
-        dataframe["crossover_bull"] = crossed_above(dataframe["macd_line"], dataframe["signal_line"])
-        dataframe["crossover_bear"] = crossed_below(dataframe["macd_line"], dataframe["signal_line"])
-        dataframe["buy_signal"] = dataframe["was_oversold"] & dataframe["crossover_bull"]
-        dataframe["sell_signal"] = dataframe["was_overbought"] & dataframe["crossover_bear"]
+        was_oversold = dataframe["bars_since_oversold"] <= s["signal_lookback_bars"]
+        was_overbought = dataframe["bars_since_overbought"] <= s["signal_lookback_bars"]
+        crossover_bull = crossed_above(dataframe["macd_line"], dataframe["signal_line"])
+        crossover_bear = crossed_below(dataframe["macd_line"], dataframe["signal_line"])
+        dataframe["buy_signal"] = was_oversold & crossover_bull
+        dataframe["sell_signal"] = was_overbought & crossover_bear
 
-        start_ts = to_unix_timestamp(s["start"])
-        end_ts = to_unix_timestamp(s["end"])
-        if start_ts is None and end_ts is None:
-            dataframe["in_date_range"] = True
-        else:
-            lower = dataframe["time"] >= (start_ts if start_ts is not None else dataframe["time"].min())
-            upper_bound = end_ts if end_ts is not None else (dataframe["time"].max() + 1)
-            upper = dataframe["time"] < upper_bound
-            dataframe["in_date_range"] = lower & upper
+        self._apply_date_range(dataframe, s["start"], s["end"])
 
         dataframe["enable_long"] = s["enable_long"]
         dataframe["enable_short"] = s["enable_short"]

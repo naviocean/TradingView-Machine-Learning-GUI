@@ -260,6 +260,8 @@ def _require_pair_string(value: Any, *, key: str) -> None:
             f"Config value '{key}' has invalid format '{value}'. "
             f"Both exchange and symbol must be non-empty."
         )
+
+
 def _require_choice(
     config: dict[str, Any],
     key: str,

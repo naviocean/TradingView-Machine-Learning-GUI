@@ -5,6 +5,8 @@ from typing import Any
 
 import pandas as pd
 
+from .indicators import to_unix_timestamp
+
 
 class BaseStrategy(ABC):
     """Abstract base class for all HyperView strategies.
@@ -56,3 +58,15 @@ class BaseStrategy(ABC):
             dataframe[column] = dataframe[column].astype("float64")
         dataframe = dataframe.sort_values("time").drop_duplicates(subset=["time"]).reset_index(drop=True)
         return dataframe
+
+    @staticmethod
+    def _apply_date_range(dataframe: pd.DataFrame, start: str | None, end: str | None) -> None:
+        """Set the ``in_date_range`` bool column on *dataframe* from optional ISO date strings."""
+        start_ts = to_unix_timestamp(start)
+        end_ts = to_unix_timestamp(end)
+        if start_ts is None and end_ts is None:
+            dataframe["in_date_range"] = True
+            return
+        lower = dataframe["time"] >= (start_ts if start_ts is not None else dataframe["time"].min())
+        upper_bound = end_ts if end_ts is not None else dataframe["time"].max() + 1
+        dataframe["in_date_range"] = lower & (dataframe["time"] < upper_bound)

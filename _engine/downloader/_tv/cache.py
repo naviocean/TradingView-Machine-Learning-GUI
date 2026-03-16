@@ -86,14 +86,17 @@ def _sanitize_cache_component(value: str) -> str:
 # ------------------------------------------------------------------
 
 def slice_frame(frame: pd.DataFrame, request: CandleRequest) -> pd.DataFrame:
-    dataframe = frame.copy()
+    result = frame
     start = to_timestamp(request.start)
     end = to_timestamp(request.end)
     if start is not None:
-        dataframe = dataframe[dataframe["time"] >= start]
+        result = result[result["time"] >= start]
     if end is not None:
-        dataframe = dataframe[dataframe["time"] < end]
-    return dataframe.reset_index(drop=True)
+        result = result[result["time"] < end]
+    # Only copy when no filter ran — filter expressions already produce a new DataFrame.
+    if result is frame:
+        result = frame.copy()
+    return result.reset_index(drop=True)
 
 
 def merge_frames(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:

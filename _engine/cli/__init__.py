@@ -2,15 +2,11 @@ from __future__ import annotations
 
 import argparse
 
-from .._runtime import configure_pycache
 from ..config import load_config
 from .download import run_download_data
 from .backtest import run_backtest
 from .hyperopt import run_hyperopt
 from .list import run_list_data, run_list_strategies
-
-
-configure_pycache()
 
 
 def build_parser() -> argparse.ArgumentParser:

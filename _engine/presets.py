@@ -20,6 +20,13 @@ _ALLOWED_OBJECTIVES = {
 _ALLOWED_SEARCH_METHODS = {"grid", "bayesian"}
 _PRESET_SCOPE_KEYS = ("pair", "timeframe", "session", "adjustment", "mode")
 
+# Built once at import time — avoids recreating these sets on every _validate_payload call.
+_ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"strategy", "updated_at", "presets"})
+_ALLOWED_PRESET_KEYS: frozenset[str] = frozenset({
+    "pair", "timeframe", "session", "adjustment", "mode",
+    "sl", "tp", "objective", "search_method", "updated_at", "metrics",
+})
+
 
 def strategy_preset_path(output_dir: str | Path, strategy: str) -> Path:
     return Path(output_dir) / f"{strategy}_presets.json"
@@ -137,16 +144,12 @@ def _read_existing_payload(file_path: Path, strategy: str) -> dict[str, Any]:
 
 
 def _normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = deepcopy(payload)
-    presets = normalized.get("presets", [])
-    if isinstance(presets, list):
-        normalized["presets"] = [dict(item) if isinstance(item, dict) else item for item in presets]
-    return normalized
+    # deepcopy already produces independent copies of all nested dicts — no further wrapping needed.
+    return deepcopy(payload)
 
 
 def _validate_payload(payload: dict[str, Any]) -> None:
-    allowed_top_level = {"strategy", "updated_at", "presets"}
-    unknown_top_level = sorted(set(payload) - allowed_top_level)
+    unknown_top_level = sorted(set(payload) - _ALLOWED_TOP_LEVEL_KEYS)
     if unknown_top_level:
         raise ValueError(
             f"Preset file contains unsupported top-level keys: {', '.join(unknown_top_level)}"
@@ -158,24 +161,11 @@ def _validate_payload(payload: dict[str, Any]) -> None:
     if not isinstance(presets, list):
         raise ValueError("Preset file value 'presets' must be a list")
 
-    allowed_preset_keys = {
-        "pair",
-        "timeframe",
-        "session",
-        "adjustment",
-        "mode",
-        "sl",
-        "tp",
-        "objective",
-        "search_method",
-        "updated_at",
-        "metrics",
-    }
     for index, preset in enumerate(presets):
         prefix = f"presets[{index}]"
         if not isinstance(preset, dict):
             raise ValueError(f"Preset file value '{prefix}' must be an object")
-        unknown_keys = sorted(set(preset) - allowed_preset_keys)
+        unknown_keys = sorted(set(preset) - _ALLOWED_PRESET_KEYS)
         if unknown_keys:
             raise ValueError(
                 f"Preset file value '{prefix}' contains unsupported keys: {', '.join(unknown_keys)}"

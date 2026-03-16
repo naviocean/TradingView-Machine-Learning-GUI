@@ -82,6 +82,7 @@ def _run_single_hyperopt(
         in_range_bars = int(signal_frame["in_date_range"].sum())
         density = _signal_density_suffix(buy_count + sell_count, in_range_bars)
         print(f"   \u2022 Signals : {buy_count} buy / {sell_count} sell ({density})")
+        request = OptimizationRequest(
             candle_request=candle_request,
             mode=mode,
             objective=objective,

@@ -55,6 +55,7 @@ def sma(values: pd.Series, length: int) -> pd.Series:
     """Simple Moving Average."""
     return wrap(talib.SMA(to_numpy(values), timeperiod=length), _idx(values))
 
+
 def wma(values: pd.Series, length: int) -> pd.Series:
     """Weighted Moving Average."""
     return wrap(talib.WMA(to_numpy(values), timeperiod=length), _idx(values))
@@ -239,6 +240,7 @@ def mfi(
     idx = _idx(high)
     return wrap(talib.MFI(to_numpy(high), to_numpy(low), to_numpy(close), to_numpy(volume), timeperiod=length), idx)
 
+
 def ad(high: pd.Series, low: pd.Series, close: pd.Series, volume: pd.Series) -> pd.Series:
     """Chaikin A/D Line via TA-Lib."""
     idx = _idx(high)
@@ -263,22 +265,15 @@ def vwap(
 # ---------------------------------------------------------------------------
 
 def barssince(condition: pd.Series | list[bool] | np.ndarray) -> pd.Series:
-    """Count bars since *condition* was last True."""
-    series = pd.Series(condition, dtype="boolean")
-    output = pd.Series(np.nan, index=series.index, dtype="float64")
-    last_true_seen = False
-    counter = 0
-
-    for idx, value in series.items():
-        if bool(value):
-            output.loc[idx] = 0.0
-            counter = 0
-            last_true_seen = True
-        elif last_true_seen:
-            counter += 1
-            output.loc[idx] = float(counter)
-
-    return output
+    """Count bars since *condition* was last True (vectorised, no Python loop)."""
+    if not isinstance(condition, pd.Series):
+        condition = pd.Series(condition)
+    mask = condition.to_numpy(dtype=bool, na_value=False)
+    pos = np.arange(len(mask), dtype="float64")
+    # Record the bar index at each True position, NaN elsewhere; ffill propagates forward.
+    last_true_pos = pd.Series(np.where(mask, pos, np.nan)).ffill().to_numpy()
+    result = np.where(np.isnan(last_true_pos), np.nan, pos - last_true_pos)
+    return pd.Series(result, index=condition.index, dtype="float64")
 
 
 def crossed_above(left: pd.Series, right: pd.Series) -> pd.Series:

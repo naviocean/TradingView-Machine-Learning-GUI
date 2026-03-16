@@ -5,12 +5,9 @@ from __future__ import annotations
 import importlib
 import pkgutil
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from ._lib.base import BaseStrategy
 
-if TYPE_CHECKING:
-    pass
 
 _STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {}
 
